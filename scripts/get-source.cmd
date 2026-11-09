@@ -8,6 +8,8 @@ set FILE=7z%NUM%-src.tar.xz
 set DIR=%~dp0..\src\src%NUM%
 set DL=%~dp0..\downloads\%FILE%
 
+if not exist "%~dp0..\downloads" mkdir "%~dp0..\downloads"
+
 if not exist "%DL%" (
   echo Downloading source %VERSION% ...
   curl -L -o "%DL%" "https://github.com/ip7z/7zip/releases/download/%VERSION%/%FILE%"

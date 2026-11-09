@@ -3,7 +3,9 @@ REM 7-Zip Modern installer build script
 REM Requires Inno Setup 7. ISCC.exe should be on PATH or found automatically.
 
 set ISCC=ISCC.exe
+if defined ISCC_PATH if exist "%ISCC_PATH%" set ISCC="%ISCC_PATH%"
 if not exist "%ISCC%" set ISCC="%LOCALAPPDATA%\Programs\Inno Setup 7\ISCC.exe"
+if not exist "%ISCC%" set ISCC="C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 if not exist "%ISCC%" set ISCC="C:\Program Files (x86)\Inno Setup 7\ISCC.exe"
 if not exist "%ISCC%" set ISCC="C:\Program Files\Inno Setup 7\ISCC.exe"
 
