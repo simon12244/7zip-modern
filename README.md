@@ -2,6 +2,12 @@
 
 > 安装即关联 —— 让 7-Zip 装完就能双击打开压缩包
 
+## 下载
+
+👉 [**下载最新安装包**](https://github.com/simon12244/7zip-modern/releases/latest)
+
+系统要求：Windows 10/11 x64
+
 ## 这是什么
 
 基于 **官方 7-Zip 原版安装包** 的增强安装器（不修改 7-Zip 任何二进制文件）。
