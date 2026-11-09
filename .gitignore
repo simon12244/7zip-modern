@@ -1,0 +1,9 @@
+# 构建产物
+installer/output/
+
+# 下载的第三方安装包（发布时通过脚本重新获取，不入库大文件）
+downloads/*.exe
+downloads/*.msi
+
+# 日志
+*.log
