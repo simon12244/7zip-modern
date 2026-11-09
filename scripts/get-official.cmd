@@ -1,35 +1,38 @@
 @echo off
+setlocal
 REM Download the official 7-Zip installer into downloads\
 REM Bump VERSION when a new 7-Zip release ships.
 
 set VERSION=26.06
-set FILE=7z%VERSION:.=%-x64.exe
+set NUM=%VERSION:.=%
+set FILE=7z%NUM%-x64.exe
 set URL=https://github.com/ip7z/7zip/releases/download/%VERSION%/%FILE%
-set OUT=%~dp0..\downloads\%FILE%
+set ROOT=%~dp0..
+set OUT=%ROOT%\downloads\%FILE%
 
-if not exist "%~dp0..\downloads" mkdir "%~dp0..\downloads"
+if not exist "%ROOT%\downloads" mkdir "%ROOT%\downloads"
 
-call :check
-if not errorlevel 1 (
-  echo Already downloaded: %FILE%
-  exit /b 0
+call :fetch "%OUT%" "%URL%" 500000
+if errorlevel 1 (
+  echo ERROR: download failed or file looks invalid.
+  exit /b 1
 )
-
-echo Downloading %URL%
-for %%R in (1 2 3 4 5) do (
-  curl -L -f -s --retry 3 --retry-delay 5 --max-time 900 -o "%OUT%" "%URL%"
-  call :check
-  if not errorlevel 1 goto :ok
-  echo Retry %%R ...
-)
-echo ERROR: download failed or file looks invalid.
-exit /b 1
-
-:ok
 echo Saved to downloads\%FILE%
 exit /b 0
 
-:check
-if not exist "%OUT%" exit /b 1
-for %%A in ("%OUT%") do if %%~zA LSS 500000 exit /b 1
-exit /b 0
+:fetch
+set "F=%~1"
+set "U=%~2"
+set "MIN=%~3"
+if exist "%F%" for %%A in ("%F%") do if %%~zA GEQ %MIN% (
+  echo Already downloaded.
+  exit /b 0
+)
+echo Downloading %U%
+for %%R in (1 2 3 4 5) do (
+  curl -L -f -s --retry 3 --retry-all-errors --retry-delay 5 --max-time 900 -o "%F%" "%U%"
+  if exist "%F%" for %%A in ("%F%") do if %%~zA GEQ %MIN% exit /b 0
+  echo Retry %%R ...
+  del /q "%F%" >nul 2>&1
+)
+exit /b 1
