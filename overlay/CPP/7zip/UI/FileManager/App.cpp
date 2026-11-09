@@ -187,6 +187,7 @@ static FTransparentBlt GetTransparentBlt()
 CModernToolBar::CModernToolBar():
     _hwnd(NULL),
     _parent(NULL),
+    _top(0),
     _iconSize(24),
     _barHeight(0),
     _hot(-1),
@@ -320,7 +321,7 @@ void CModernToolBar::AutoSize()
   RECT rc;
   ::GetClientRect(_parent, &rc);
   Layout(rc.right);
-  ::SetWindowPos(_hwnd, NULL, 0, 0, rc.right, _barHeight,
+  ::SetWindowPos(_hwnd, NULL, 0, _top, rc.right, _barHeight,
       SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
@@ -411,7 +412,9 @@ void CModernToolBar::Paint(HDC dc)
 {
   RECT rc;
   ::GetClientRect(_hwnd, &rc);
-  NModernUI::FillSolid(dc, rc, NModernUI::Col_Bar());
+  // the caption band and the command bar share one grey material; the strip
+  // below the buttons is the only rule between the chrome and the content
+  NModernUI::FillSolid(dc, rc, NModernUI::Col_Band());
 
   const int radius = NModernUI::Scale(8);
 

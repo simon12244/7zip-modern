@@ -706,27 +706,7 @@ bool CPanel::OnNotifyList(LPNMHDR header, LRESULT &result)
 }
 
 // ---------------------------------------------------------------- 7-Zip Modern
-// Palette helpers used by the list custom-draw handler below.
-
-static COLORREF Modern_ShiftColor(COLORREF c, int delta)
-{
-  int r = (int)GetRValue(c) + delta;
-  int g = (int)GetGValue(c) + delta;
-  int b = (int)GetBValue(c) + delta;
-  if (r < 0) r = 0; else if (r > 255) r = 255;
-  if (g < 0) g = 0; else if (g > 255) g = 255;
-  if (b < 0) b = 0; else if (b > 255) b = 255;
-  return RGB((BYTE)r, (BYTE)g, (BYTE)b);
-}
-
-// Deliberately subtle: the tint has to separate rows without competing with
-// the filename text or the system's own selection highlight.
-static COLORREF Modern_ZebraColor(COLORREF base)
-{
-  const int lum = (GetRValue(base) * 299 + GetGValue(base) * 587
-                 + GetBValue(base) * 114) / 1000;
-  return Modern_ShiftColor(base, (lum > 128) ? -7 : 10);
-}
+// macOS-style row painting lives in OnCustomDraw below.
 
 bool CPanel::OnCustomDraw(LPNMLVCUSTOMDRAW lplvcd, LRESULT &result)
 {
@@ -758,18 +738,18 @@ bool CPanel::OnCustomDraw(LPNMLVCUSTOMDRAW lplvcd, LRESULT &result)
       }
     }
 
-    // Selected rows are painted by the system: it applies the theme accent
-    // colour and the focus rectangle, which we must not override.
+    // macOS-like selection: a solid accent fill with a white label instead
+    // of the system's navy highlight. Everything else stays system drawn.
     if (isSelected)
     {
-      result = CDRF_DODEFAULT;
+      lplvcd->clrText = RGB(0xFF, 0xFF, 0xFF);
+      lplvcd->clrTextBk = NModernUI::Col_Accent();
+      result = CDRF_NEWFONT;
       return true;
     }
 
-    const COLORREF base = _listView.GetBkColor();
-    lplvcd->clrTextBk = ((lplvcd->nmcd.dwItemSpec & 1) != 0)
-        ? Modern_ZebraColor(base)
-        : base;
+    // no alternating tint: the Finder look keeps the content area pure white
+    lplvcd->clrTextBk = _listView.GetBkColor();
     result = CDRF_NEWFONT;
     return true;
   }

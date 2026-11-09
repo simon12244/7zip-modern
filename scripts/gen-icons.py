@@ -22,17 +22,14 @@ from PIL import Image, ImageDraw
 SS = 8  # supersampling factor
 
 # ---------------------------------------------------------------- palette
+# macOS-flavoured set: every glyph is monochrome ink, and the primary action
+# (Add) carries the single system-blue accent.
 
-BLUE = (59, 130, 246)
-GREEN = (16, 185, 129)
-INDIGO = (99, 102, 241)
-SKY = (14, 165, 233)
-AMBER = (245, 158, 11)
-RED = (239, 68, 68)
-SLATE = (100, 116, 139)
+BLUE = (0, 122, 255)     # macOS system blue - Add only
+GREEN = INDIGO = SKY = AMBER = RED = SLATE = (29, 29, 31)
 
 KEY = (255, 0, 255)  # magenta transparency key
-INK = (30, 41, 59)   # dark accent used for a few details
+INK = (29, 29, 31)   # monochrome stroke colour
 
 
 def tint(color, alpha=0.16):

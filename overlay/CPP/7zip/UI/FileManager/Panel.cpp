@@ -197,8 +197,8 @@ static LRESULT CALLBACK Modern_StatusProc(HWND hwnd, UINT msg, WPARAM wParam, LP
 
     RECT rc;
     ::GetClientRect(hwnd, &rc);
-    NModernUI::FillSolid(dc, rc, NModernUI::Col_Band());
-    // a single hairline instead of the sunken top edge
+    // Finder-style status bar: pure white with a single rule on top
+    NModernUI::FillSolid(dc, rc, NModernUI::Col_Bar());
     NModernUI::FillSolid(dc, rc.left, rc.top, rc.right, rc.top + 1,
         NModernUI::Col_Hairline());
 
@@ -245,7 +245,7 @@ static LRESULT CALLBACK Modern_StatusProc(HWND hwnd, UINT msg, WPARAM wParam, LP
       if (i + 1 < numParts && right < rc.right)
         NModernUI::FillSolid(dc, right - 1, rc.top + NModernUI::Scale(7),
             right, rc.bottom - NModernUI::Scale(7),
-            NModernUI::Col_Hairline());
+            NModernUI::Col_HairlineSoft());
 
       left = right;
     }
@@ -282,7 +282,7 @@ static void Modern_StyleStatusBar(HWND statusBar)
 {
   if (!statusBar || ::GetProp(statusBar, kModernStatusOldProc))
     return;
-  ::SendMessage(statusBar, SB_SETBKCOLOR, 0, (LPARAM)NModernUI::Col_Band());
+  ::SendMessage(statusBar, SB_SETBKCOLOR, 0, (LPARAM)NModernUI::Col_Bar());
   // The bar derives its height from this font, so it stays in proportion.
   ::SendMessageW(statusBar, WM_SETFONT, (WPARAM)NModernUI::Font_Bar(), TRUE);
   const WNDPROC oldProc = (WNDPROC)::SetWindowLongPtr(statusBar, GWLP_WNDPROC,

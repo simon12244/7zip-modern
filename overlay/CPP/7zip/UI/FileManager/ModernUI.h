@@ -22,22 +22,30 @@
 namespace NModernUI
 {
   // ---------------------------------------------------------------- palette
-  // A calm neutral canvas with a single blue accent. All values are tuned
-  // for the light theme; dark surfaces only differ in the list/bar colour.
+  // A macOS-flavoured light theme: one translucent-feeling grey material for
+  // the whole window chrome, pure white content, system blue as the only
+  // accent and Apple's separator grey for hairlines.
 
   inline COLORREF Col_Bg()           { return RGB(0xFF, 0xFF, 0xFF); }
   inline COLORREF Col_Bar()          { return RGB(0xFF, 0xFF, 0xFF); }
-  inline COLORREF Col_Band()         { return RGB(0xF7, 0xF8, 0xFA); }
-  inline COLORREF Col_Hairline()     { return RGB(0xE4, 0xE7, 0xEB); }
-  inline COLORREF Col_HairlineSoft() { return RGB(0xEE, 0xF0, 0xF3); }
-  inline COLORREF Col_Ink()          { return RGB(0x1F, 0x23, 0x28); }
-  inline COLORREF Col_InkDim()       { return RGB(0x6B, 0x72, 0x80); }
-  inline COLORREF Col_InkFaint()     { return RGB(0x9A, 0xA1, 0xAC); }
-  inline COLORREF Col_Hover()        { return RGB(0xF1, 0xF3, 0xF6); }
-  inline COLORREF Col_Pressed()      { return RGB(0xE4, 0xE7, 0xEC); }
-  inline COLORREF Col_Accent()       { return RGB(0x25, 0x63, 0xEB); }
+  inline COLORREF Col_Band()         { return RGB(0xF5, 0xF5, 0xF7); }
+  inline COLORREF Col_Hairline()     { return RGB(0xE5, 0xE5, 0xEA); }
+  inline COLORREF Col_HairlineSoft() { return RGB(0xEE, 0xEE, 0xF1); }
+  inline COLORREF Col_Ink()          { return RGB(0x1D, 0x1D, 0x1F); }
+  inline COLORREF Col_InkDim()       { return RGB(0x6E, 0x6E, 0x73); }
+  inline COLORREF Col_InkFaint()     { return RGB(0xAE, 0xAE, 0xB2); }
+  inline COLORREF Col_Hover()        { return RGB(0xE8, 0xE8, 0xED); }
+  inline COLORREF Col_Pressed()      { return RGB(0xDC, 0xDC, 0xE2); }
+  inline COLORREF Col_Accent()       { return RGB(0x00, 0x7A, 0xFF); }
   inline COLORREF Col_Zebra()        { return RGB(0xFA, 0xFB, 0xFC); }
   inline COLORREF Col_Field()        { return RGB(0xFF, 0xFF, 0xFF); }
+  inline COLORREF Col_FieldBorder()  { return RGB(0xD2, 0xD2, 0xD7); }
+
+  // traffic lights (window controls, macOS style)
+  inline COLORREF Col_LightClose()   { return RGB(0xFF, 0x5F, 0x57); }
+  inline COLORREF Col_LightMin()     { return RGB(0xFE, 0xBC, 0x2E); }
+  inline COLORREF Col_LightMax()     { return RGB(0x28, 0xC8, 0x40); }
+  inline COLORREF Col_LightOff()     { return RGB(0xD8, 0xD8, 0xDC); }
 
   // ---------------------------------------------------------------- metrics
 
@@ -46,6 +54,13 @@ namespace NModernUI
   // rule. Deriving our own scale factor from the monitor DPI would make the
   // bar visibly oversized compared to the list and the menu.
   inline int Scale(int value) { return value; }
+
+  // Height of the custom caption band: traffic lights, in-window menu labels
+  // and the centred window title all live in this one strip.
+  inline int CaptionHeight() { return Scale(40); }
+  inline int LightSize()     { return Scale(12); }
+  inline int LightGap()      { return Scale(8); }
+  inline int LightLeft()     { return Scale(14); }
 
   // Text however is a different story: the stock controls take their row and
   // band heights from their own font, and 7-Zip hands the list a font built
@@ -210,12 +225,7 @@ public:
 
   LRESULT OnMsg(UINT msg, WPARAM wParam, LPARAM lParam);
 
-public:
-  // DEBUG
-  int _dbgImages;
-  int _dbgInit;
-  int _dbgIcons[8];
-private:
+  void SetTop(int y) { _top = y; }
 
 private:
   void Layout(int width);
@@ -226,6 +236,7 @@ private:
 
   HWND _hwnd;
   HWND _parent;
+  int _top;
   int _iconSize;
   int _barHeight;
   int _hot;

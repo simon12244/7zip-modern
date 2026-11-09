@@ -198,6 +198,319 @@ CApp g_App;
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
+// 7-Zip Modern ---------------------------------------------------------------
+// macOS-style window chrome. The standard caption is removed by collapsing
+// the non-client area in WM_NCCALCSIZE, and the top strip of the client area
+// is painted by hand: traffic-light window buttons, the menu bar as clickable
+// labels and a centred title. Dragging, double click maximising, Aero Snap
+// and the system menu keep working through the HTCAPTION hit-test code.
+// ------------------------------------------------------------------------------
+
+#ifndef SM_CXPADDEDBORDER // available since Vista; the SDK target is older
+#define SM_CXPADDEDBORDER 92
+#endif
+
+struct CModernChrome
+{
+  bool Active;
+  bool MouseInside;
+  int HotLight;  // window button under the mouse (0..2), -1 when none
+  int HotMenu;   // menu label under the mouse, -1 when none
+  int OpenMenu;  // popup currently being tracked, -1 when none
+};
+
+static CModernChrome g_Chrome = { false, false, -1, -1, -1 };
+
+static RECT Chrome_LightRect(int i)
+{
+  RECT r;
+  r.left = NModernUI::LightLeft() +
+      i * (NModernUI::LightSize() + NModernUI::LightGap());
+  r.top = (NModernUI::CaptionHeight() - NModernUI::LightSize()) / 2;
+  r.right = r.left + NModernUI::LightSize();
+  r.bottom = r.top + NModernUI::LightSize();
+  return r;
+}
+
+static RECT Chrome_CaptionRect(HWND hWnd)
+{
+  RECT rc;
+  ::GetClientRect(hWnd, &rc);
+  rc.bottom = rc.top + NModernUI::CaptionHeight();
+  return rc;
+}
+
+static int Chrome_MenuLeft()
+{
+  return NModernUI::LightLeft() +
+      3 * (NModernUI::LightSize() + NModernUI::LightGap()) +
+      NModernUI::Scale(10);
+}
+
+// The menu resource marks shortcuts as "文件(&F)"; the in-window menu bar
+// shows clean labels instead: "文件". "&&" survives as a literal '&'.
+static void Chrome_MenuLabel(const wchar_t *src, wchar_t *dst, unsigned cap)
+{
+  unsigned o = 0;
+  for (unsigned i = 0; src[i] && o + 1 < cap; i++)
+  {
+    if (src[i] == L'&')
+    {
+      if (src[i + 1] == L'&')
+      {
+        dst[o++] = L'&';
+        i++;
+        continue;
+      }
+      // "(&X)" / "[&X]": drop the whole bracket group with the shortcut
+      if (i > 0 && (src[i - 1] == L'(' || src[i - 1] == L'['))
+      {
+        const wchar_t close = (src[i - 1] == L'(') ? L')' : L']';
+        if (src[i + 2] == close)
+        {
+          i += 2;
+          o--; // remove the opening bracket written in the previous pass
+          continue;
+        }
+      }
+      continue; // bare accelerator marker
+    }
+    dst[o++] = src[i];
+  }
+  dst[o] = 0;
+}
+
+// The same width measurement drives painting and hit testing, so the two can
+// never drift apart.
+static int Chrome_MenuItemWidth(HWND hWnd, int index)
+{
+  wchar_t buf[128];
+  buf[0] = 0;
+  const HMENU menu = ::GetMenu(hWnd);
+  if (!menu)
+    return 0;
+  ::GetMenuStringW(menu, index, buf, 128, MF_BYPOSITION);
+  wchar_t label[128];
+  Chrome_MenuLabel(buf, label, 128);
+  HDC dc = ::GetDC(hWnd);
+  SIZE sz;
+  sz.cx = 0;
+  HGDIOBJ old = ::SelectObject(dc, NModernUI::Font_Bar());
+  ::GetTextExtentPoint32W(dc, label, lstrlenW(label), &sz);
+  ::SelectObject(dc, old);
+  ::ReleaseDC(hWnd, dc);
+  return sz.cx + NModernUI::Scale(16);
+}
+
+static int Chrome_MenuAt(HWND hWnd, int x, int y)
+{
+  if (y < 0 || y >= NModernUI::CaptionHeight())
+    return -1;
+  const HMENU menu = ::GetMenu(hWnd);
+  if (!menu)
+    return -1;
+  int cx = Chrome_MenuLeft();
+  const int count = ::GetMenuItemCount(menu);
+  for (int i = 0; i < count; i++)
+  {
+    const int w = Chrome_MenuItemWidth(hWnd, i);
+    if (x >= cx && x < cx + w)
+      return i;
+    cx += w;
+  }
+  return -1;
+}
+
+static int Chrome_LightAt(int x, int y)
+{
+  for (int i = 0; i < 3; i++)
+  {
+    const RECT r = Chrome_LightRect(i);
+    if (x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+      return i;
+  }
+  return -1;
+}
+
+static void Chrome_Invalidate(HWND hWnd)
+{
+  const RECT rc = Chrome_CaptionRect(hWnd);
+  ::InvalidateRect(hWnd, &rc, FALSE);
+}
+
+static void Chrome_TrackMouse(HWND hWnd)
+{
+  TRACKMOUSEEVENT tme;
+  tme.cbSize = sizeof(tme);
+  tme.dwFlags = TME_LEAVE;
+  tme.hwndTrack = hWnd;
+  tme.dwHoverTime = 0;
+  ::TrackMouseEvent(&tme);
+}
+
+static void Chrome_OpenMenu(HWND hWnd, int index)
+{
+  const HMENU menu = ::GetMenu(hWnd);
+  if (!menu)
+    return;
+  const HMENU sub = ::GetSubMenu(menu, index);
+  if (!sub)
+    return;
+  int x = Chrome_MenuLeft();
+  for (int i = 0; i < index; i++)
+    x += Chrome_MenuItemWidth(hWnd, i);
+  POINT pt = { x, NModernUI::CaptionHeight() - NModernUI::Scale(2) };
+  ::ClientToScreen(hWnd, &pt);
+
+  ::SetForegroundWindow(hWnd);
+  g_Chrome.OpenMenu = index;
+  g_Chrome.HotMenu = index;
+  Chrome_Invalidate(hWnd);
+
+  // The chosen command comes back as an ordinary WM_COMMAND; the flag has to
+  // be reset no matter how the popup was dismissed.
+  ::TrackPopupMenuEx(sub, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_LEFTBUTTON,
+      pt.x, pt.y, hWnd, NULL);
+
+  g_Chrome.OpenMenu = -1;
+  g_Chrome.HotMenu = -1;
+  Chrome_Invalidate(hWnd);
+}
+
+// The window title carries the full path; the caption shows the leaf like the
+// Finder does.
+static void Chrome_TitleText(HWND hWnd, wchar_t *buf, unsigned cap)
+{
+  wchar_t full[1024];
+  full[0] = 0;
+  ::GetWindowTextW(hWnd, full, 1024);
+  int end = lstrlenW(full);
+  while (end > 0 && (full[end - 1] == L'\\' || full[end - 1] == L'/'))
+    end--;
+  int start = end;
+  while (start > 0 && full[start - 1] != L'\\' && full[start - 1] != L'/')
+    start--;
+  if (end <= start)
+  {
+    lstrcpynW(buf, full, (int)cap);
+    return;
+  }
+  unsigned n = (unsigned)(end - start);
+  if (n > cap - 1)
+    n = cap - 1;
+  lstrcpynW(buf, full + start, (int)(n + 1));
+}
+
+static COLORREF Chrome_Darken(COLORREF c, double f)
+{
+  return RGB((int)(GetRValue(c) * f), (int)(GetGValue(c) * f),
+      (int)(GetBValue(c) * f));
+}
+
+static void Chrome_DrawLightGlyph(HDC dc, const RECT &r, int light, COLORREF col)
+{
+  HPEN pen = ::CreatePen(PS_SOLID, NModernUI::Scale(1), col);
+  HGDIOBJ oldPen = ::SelectObject(dc, pen);
+  const int cx = (r.left + r.right) / 2;
+  const int cy = (r.top + r.bottom) / 2;
+  const int g = NModernUI::Scale(3); // glyph radius
+  if (light == 0) // close: two diagonals
+  {
+    ::MoveToEx(dc, cx - g, cy - g, NULL);
+    ::LineTo(dc, cx + g, cy + g);
+    ::MoveToEx(dc, cx + g, cy - g, NULL);
+    ::LineTo(dc, cx - g, cy + g);
+  }
+  else if (light == 1) // minimise: a single dash
+  {
+    ::MoveToEx(dc, cx - g, cy, NULL);
+    ::LineTo(dc, cx + g, cy);
+  }
+  else // maximise: two triangles pointing outward on the diagonal
+  {
+    const POINT tri1[3] = { { cx - g, cy + g / 2 }, { cx - g / 2, cy + g }, { cx - g / 2, cy + g / 2 } };
+    const POINT tri2[3] = { { cx + g, cy - g / 2 }, { cx + g / 2, cy - g }, { cx + g / 2, cy - g / 2 } };
+    HBRUSH br = ::CreateSolidBrush(col);
+    HGDIOBJ oldBr = ::SelectObject(dc, br);
+    ::Polygon(dc, tri1, 3);
+    ::Polygon(dc, tri2, 3);
+    ::SelectObject(dc, oldBr);
+    ::DeleteObject(br);
+  }
+  ::SelectObject(dc, oldPen);
+  ::DeleteObject(pen);
+}
+
+static void Chrome_Paint(HWND hWnd, HDC dc)
+{
+  const RECT band = Chrome_CaptionRect(hWnd);
+  NModernUI::FillSolid(dc, band, NModernUI::Col_Band());
+
+  // traffic lights
+  for (int i = 0; i < 3; i++)
+  {
+    COLORREF col;
+    if (i == 0)
+      col = NModernUI::Col_LightClose();
+    else if (i == 1)
+      col = NModernUI::Col_LightMin();
+    else
+      col = NModernUI::Col_LightMax();
+    if (!g_Chrome.Active)
+      col = NModernUI::Col_LightOff();
+    const RECT r = Chrome_LightRect(i);
+    HBRUSH br = ::CreateSolidBrush(col);
+    HGDIOBJ oldBr = ::SelectObject(dc, br);
+    HGDIOBJ oldPen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
+    ::Ellipse(dc, r.left, r.top, r.right, r.bottom);
+    ::SelectObject(dc, oldPen);
+    ::SelectObject(dc, oldBr);
+    ::DeleteObject(br);
+    // the glyphs only show while the pointer hovers, like on macOS
+    if (g_Chrome.Active && g_Chrome.HotLight == i)
+      Chrome_DrawLightGlyph(dc, r, i, Chrome_Darken(col, 0.45));
+  }
+
+  // menu bar
+  const HMENU menu = ::GetMenu(hWnd);
+  if (menu)
+  {
+    int x = Chrome_MenuLeft();
+    const int count = ::GetMenuItemCount(menu);
+    for (int i = 0; i < count; i++)
+    {
+      wchar_t buf[128];
+      buf[0] = 0;
+      ::GetMenuStringW(menu, i, buf, 128, MF_BYPOSITION);
+      wchar_t label[128];
+      Chrome_MenuLabel(buf, label, 128);
+      const int w = Chrome_MenuItemWidth(hWnd, i);
+      RECT ir = band;
+      ir.left = x;
+      ir.right = x + w;
+      const bool lit = (i == g_Chrome.HotMenu) || (i == g_Chrome.OpenMenu);
+      if (lit)
+        NModernUI::FillRound(dc, ir, NModernUI::Scale(6),
+            NModernUI::Col_Accent());
+      NModernUI::DrawTextIn(dc, ir, label,
+          lit ? RGB(0xFF, 0xFF, 0xFF) : NModernUI::Col_Ink(),
+          NModernUI::Font_Bar(),
+          DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+      x += w;
+    }
+  }
+
+  // centred title
+  wchar_t title[128];
+  Chrome_TitleText(hWnd, title, 128);
+  RECT tr = band;
+  tr.left = Chrome_MenuLeft();
+  NModernUI::DrawTextIn(dc, tr, title,
+      g_Chrome.Active ? NModernUI::Col_Ink() : NModernUI::Col_InkDim(),
+      NModernUI::Font(100, true),
+      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+}
+
 static const wchar_t * const kWindowClass = L"7-Zip::FM";
 
 #ifdef UNDER_CE
@@ -896,6 +1209,97 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
   switch (message)
   {
+    // 7-Zip Modern: custom macOS-style frame ------------------------------
+    case WM_NCCALCSIZE:
+      // Collapse the non-client area: the client covers the whole window and
+      // the caption strip is an ordinary part of the client. When maximised
+      // the window rect extends past the monitor by the frame size, so trim
+      // it back in.
+      if (wParam)
+      {
+        RECT &rc = *(RECT *)lParam;
+        if (::IsZoomed(hWnd))
+        {
+          const int fx = ::GetSystemMetrics(SM_CXSIZEFRAME) +
+              ::GetSystemMetrics(SM_CXPADDEDBORDER);
+          const int fy = ::GetSystemMetrics(SM_CYSIZEFRAME) +
+              ::GetSystemMetrics(SM_CXPADDEDBORDER);
+          rc.left += fx;
+          rc.top += fy;
+          rc.right -= fx;
+          rc.bottom -= fy;
+        }
+        return 0;
+      }
+      break;
+
+    case WM_NCHITTEST:
+    {
+      const POINT pt = { (int)(short)LOWORD(lParam),
+                         (int)(short)HIWORD(lParam) };
+      RECT wr;
+      ::GetWindowRect(hWnd, &wr);
+      if (!::IsZoomed(hWnd))
+      {
+        // the invisible resize border lives inside our client area now
+        const int m = NModernUI::Scale(6);
+        const bool l = pt.x < wr.left + m;
+        const bool r = pt.x >= wr.right - m;
+        const bool t = pt.y < wr.top + m;
+        const bool b = pt.y >= wr.bottom - m;
+        if (t && l) return HTTOPLEFT;
+        if (t && r) return HTTOPRIGHT;
+        if (b && l) return HTBOTTOMLEFT;
+        if (b && r) return HTBOTTOMRIGHT;
+        if (l) return HTLEFT;
+        if (r) return HTRIGHT;
+        if (t) return HTTOP;
+        if (b) return HTBOTTOM;
+      }
+      POINT cp = pt;
+      ::ScreenToClient(hWnd, &cp);
+      if (cp.y < NModernUI::CaptionHeight() &&
+          Chrome_LightAt(cp.x, cp.y) < 0 &&
+          Chrome_MenuAt(hWnd, cp.x, cp.y) < 0)
+        return HTCAPTION; // drag, double click maximise, system menu, snap
+      return HTCLIENT;
+    }
+
+    case WM_SETCURSOR:
+      // The window class carries the horizontal resize cursor for the panel
+      // splitter; the caption strip gets a normal arrow instead.
+      if (LOWORD(lParam) == HTCLIENT)
+      {
+        const DWORD pos = ::GetMessagePos();
+        POINT pt = { (int)(short)LOWORD(pos), (int)(short)HIWORD(pos) };
+        ::ScreenToClient(hWnd, &pt);
+        if (pt.y < NModernUI::CaptionHeight())
+        {
+          ::SetCursor(::LoadCursor(NULL, IDC_ARROW));
+          return TRUE;
+        }
+      }
+      break;
+
+    case WM_PAINT:
+    {
+      PAINTSTRUCT ps;
+      HDC dc = ::BeginPaint(hWnd, &ps);
+      if (dc)
+      {
+        Chrome_Paint(hWnd, dc);
+        ::EndPaint(hWnd, &ps);
+      }
+      return 0;
+    }
+
+    case WM_MOUSELEAVE:
+      g_Chrome.MouseInside = false;
+      g_Chrome.HotLight = -1;
+      g_Chrome.HotMenu = -1;
+      Chrome_Invalidate(hWnd);
+      break;
+
     case WM_COMMAND:
     {
       unsigned wmId    = LOWORD(wParam);
@@ -1061,10 +1465,36 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     // case WM_MOVE: break;
     
     case WM_LBUTTONDOWN:
+    {
+      // caption strip first: traffic lights and the in-window menu bar
+      const int capX = (int)(short)LOWORD(lParam);
+      const int capY = (int)(short)HIWORD(lParam);
+      if (capY < NModernUI::CaptionHeight())
+      {
+        const int light = Chrome_LightAt(capX, capY);
+        if (light >= 0)
+        {
+          if (light == 0)
+            ::PostMessage(hWnd, WM_SYSCOMMAND, SC_CLOSE, 0);
+          else if (light == 1)
+            ::PostMessage(hWnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+          else
+            ::PostMessage(hWnd, WM_SYSCOMMAND,
+                ::IsZoomed(hWnd) ? SC_RESTORE : SC_MAXIMIZE, 0);
+          return 0;
+        }
+        const int menuIndex = Chrome_MenuAt(hWnd, capX, capY);
+        if (menuIndex >= 0)
+        {
+          Chrome_OpenMenu(hWnd, menuIndex);
+          return 0;
+        }
+      }
       g_StartCaptureMousePos = LOWORD(lParam);
       g_StartCaptureSplitterPos = g_Splitter.GetPos();
       ::SetCapture(hWnd);
       break;
+    }
     
     case WM_LBUTTONUP:
     {
@@ -1074,6 +1504,26 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     
     case WM_MOUSEMOVE:
     {
+      // hover states in the caption strip (window buttons and menu labels)
+      {
+        const int x = (int)(short)LOWORD(lParam);
+        const int y = (int)(short)HIWORD(lParam);
+        const int light = (y < NModernUI::CaptionHeight())
+            ? Chrome_LightAt(x, y) : -1;
+        const int menuIndex = (light < 0)
+            ? Chrome_MenuAt(hWnd, x, y) : -1;
+        if (light != g_Chrome.HotLight || menuIndex != g_Chrome.HotMenu)
+        {
+          g_Chrome.HotLight = light;
+          g_Chrome.HotMenu = menuIndex;
+          Chrome_Invalidate(hWnd);
+        }
+        if (!g_Chrome.MouseInside)
+        {
+          g_Chrome.MouseInside = true;
+          Chrome_TrackMouse(hWnd);
+        }
+      }
       if ((wParam & MK_LBUTTON) != 0 && ::GetCapture() == hWnd)
       {
         g_Splitter.SetPos(hWnd, g_StartCaptureSplitterPos +
@@ -1123,6 +1573,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
       if (LOWORD(wParam) != WA_INACTIVE)
         ::SendMessageW(hWnd, WM_CHANGEUISTATE,
             MAKEWPARAM(UIS_SET, UISF_HIDEACCEL), 0);
+      g_Chrome.Active = (LOWORD(wParam) != WA_INACTIVE);
+      Chrome_Invalidate(hWnd);
+      break;
+
+    case WM_NCACTIVATE:
+      g_Chrome.Active = (wParam != 0);
+      Chrome_Invalidate(hWnd);
       break;
     
     /*
@@ -1169,7 +1626,7 @@ void CApp::MoveSubWindows()
   int xSize = rect.right;
   if (xSize == 0)
     return;
-  int headerSize = 0;
+  int headerSize = NModernUI::CaptionHeight();
 
   #ifdef UNDER_CE
   _commandBar.AutoSize();
@@ -1181,6 +1638,7 @@ void CApp::MoveSubWindows()
 
   if (_toolBar.IsCreated())
   {
+    _toolBar.SetTop(NModernUI::CaptionHeight());
     _toolBar.AutoSize();
     headerSize += _toolBar.GetBarHeight();
   }

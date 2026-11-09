@@ -13,7 +13,7 @@
 
 #define OfficialExe "7z2606-x64.exe"
 #define AppVersion "26.06"
-#define ModVersion "3"
+#define ModVersion "4"
 
 [Setup]
 AppName=7-Zip Modern
