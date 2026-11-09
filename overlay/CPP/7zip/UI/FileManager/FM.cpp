@@ -271,7 +271,7 @@ static BOOL InitInstance(int nCmdShow)
   // wc.hCursor = LoadCursor (NULL, IDC_ARROW);
   wc.hCursor = ::LoadCursor(NULL, IDC_SIZEWE);
   // wc.hbrBackground = (HBRUSH) GetStockObject(WHITE_BRUSH);
-  wc.hbrBackground = (HBRUSH) (COLOR_BTNFACE + 1);
+  wc.hbrBackground = ::CreateSolidBrush(NModernUI::Col_Hairline());
 
   wc.lpszMenuName =
     #ifdef UNDER_CE
@@ -1115,23 +1115,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
       // g_App.SetFocus(g_App.LastFocusedPanel);
       g_App.SetFocusToLastItem();
       break;
-    
-    /*
+
     case WM_ACTIVATE:
-    {
-      int fActive = LOWORD(wParam);
-      switch (fActive)
-      {
-        case WA_INACTIVE:
-        {
-          // g_FocusIndex = g_App.LastFocusedPanel;
-          // g_App.LastFocusedPanel = g_App.GetFocusedPanelIndex();
-          // return 0;
-        }
-      }
+      // Modern menus hide their accelerator keys until Alt is held down.
+      // The flag lives in the per window UI state, which the system resets
+      // whenever the window is deactivated, so it is re-armed on activation.
+      if (LOWORD(wParam) != WA_INACTIVE)
+        ::SendMessageW(hWnd, WM_CHANGEUISTATE,
+            MAKEWPARAM(UIS_SET, UISF_HIDEACCEL), 0);
       break;
-    }
-    */
     
     /*
     case kLangWasChangedMessage:
@@ -1167,19 +1159,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 }
 
-static int Window_GetRealHeight(NWindows::CWindow &w)
-{
-  RECT rect;
-  w.GetWindowRect(&rect);
-  int res = RECT_SIZE_Y(rect);
-  #ifndef UNDER_CE
-  WINDOWPLACEMENT placement;
-  if (w.GetPlacement(&placement))
-    res += placement.rcNormalPosition.top;
-  #endif
-  return res;
-}
-
 void CApp::MoveSubWindows()
 {
   HWND hWnd = _window;
@@ -1200,14 +1179,10 @@ void CApp::MoveSubWindows()
   }
   #endif
 
-  if (_toolBar)
+  if (_toolBar.IsCreated())
   {
     _toolBar.AutoSize();
-    #ifdef UNDER_CE
-    int h2 = Window_GetRealHeight(_toolBar);
-    _toolBar.Move(0, headerSize, xSize, h2);
-    #endif
-    headerSize += Window_GetRealHeight(_toolBar);
+    headerSize += _toolBar.GetBarHeight();
   }
   
   int ySize = MyMax((int)(rect.bottom - headerSize), 0);

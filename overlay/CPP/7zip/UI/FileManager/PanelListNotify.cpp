@@ -548,6 +548,15 @@ void CPanel::OnNotifyActivateItems()
 
 bool CPanel::OnNotifyList(LPNMHDR header, LRESULT &result)
 {
+  // The list view relays header notifications to its parent, which lets the
+  // panel repaint the column strip without owning the control.
+  if (header->code == NM_CUSTOMDRAW)
+  {
+    const HWND headerWnd = (HWND)::SendMessageW((HWND)_listView, LVM_GETHEADER, 0, 0);
+    if (headerWnd && header->hwndFrom == headerWnd)
+      return OnHeaderCustomDraw((LPNMCUSTOMDRAW)header, result);
+  }
+
   switch (header->code)
   {
     case LVN_ITEMCHANGED:
@@ -764,6 +773,122 @@ bool CPanel::OnCustomDraw(LPNMLVCUSTOMDRAW lplvcd, LRESULT &result)
     result = CDRF_NEWFONT;
     return true;
   }
+  }
+  return false;
+}
+
+// 7-Zip Modern ---------------------------------------------------------------
+// Flat column strip: light band, quiet labels, thin separators and a custom
+// sort chevron. Everything is drawn by hand because the header control has no
+// per-item colour API.
+bool CPanel::OnHeaderCustomDraw(LPNMCUSTOMDRAW cd, LRESULT &result)
+{
+  switch (cd->dwDrawStage)
+  {
+    case CDDS_PREPAINT:
+      result = CDRF_NOTIFYITEMDRAW;
+      return true;
+
+    case CDDS_ITEMPREPAINT:
+    {
+      const int index = (int)cd->dwItemSpec;
+      RECT rc = cd->rc;
+
+      NModernUI::FillSolid(cd->hdc, rc, NModernUI::Col_Band());
+
+      wchar_t buf[128];
+      buf[0] = 0;
+      LVCOLUMNW col;
+      memset(&col, 0, sizeof(col));
+      col.mask = LVCF_TEXT;
+      col.pszText = buf;
+      col.cchTextMax = 128;
+      if (index >= 0)
+        ::SendMessageW((HWND)_listView, LVM_GETCOLUMNW, index, (LPARAM)&col);
+
+      UINT fmt = LVCFMT_LEFT;
+      if (index >= 0)
+      {
+        LVCOLUMNW fmtCol;
+        memset(&fmtCol, 0, sizeof(fmtCol));
+        fmtCol.mask = LVCF_FMT;
+        if (::SendMessageW((HWND)_listView, LVM_GETCOLUMNW, index, (LPARAM)&fmtCol))
+          fmt = fmtCol.fmt;
+      }
+
+      HDITEMW hi;
+      memset(&hi, 0, sizeof(hi));
+      hi.mask = HDI_FORMAT;
+      if (index >= 0)
+        ::SendMessageW(cd->hdr.hwndFrom, HDM_GETITEMW, index, (LPARAM)&hi);
+      const bool sortUp = (hi.fmt & HDF_SORTUP) != 0;
+      const bool sortDown = (hi.fmt & HDF_SORTDOWN) != 0;
+
+      const int pad = 11;
+      const int arrowW = (sortUp || sortDown) ? 16 : 0;
+      RECT tr = rc;
+      tr.left += pad;
+      tr.right -= pad + arrowW;
+
+      UINT flags = DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX;
+      if (fmt & LVCFMT_RIGHT)
+        flags |= DT_RIGHT;
+      else if (fmt & LVCFMT_CENTER)
+        flags |= DT_CENTER;
+      else
+        flags |= DT_LEFT;
+
+      NModernUI::DrawTextIn(cd->hdc, tr, buf, NModernUI::Col_InkDim(),
+          NModernUI::Font_Header(), flags);
+
+      if (sortUp || sortDown)
+      {
+        const int cx = rc.right - pad - 7;
+        const int cy = (rc.top + rc.bottom) / 2;
+        POINT pts[3];
+        if (sortUp)
+        {
+          pts[0].x = cx - 4; pts[0].y = cy + 2;
+          pts[1].x = cx + 4; pts[1].y = cy + 2;
+          pts[2].x = cx;     pts[2].y = cy - 3;
+        }
+        else
+        {
+          pts[0].x = cx - 4; pts[0].y = cy - 2;
+          pts[1].x = cx + 4; pts[1].y = cy - 2;
+          pts[2].x = cx;     pts[2].y = cy + 3;
+        }
+        HBRUSH br = ::CreateSolidBrush(NModernUI::Col_InkDim());
+        HGDIOBJ oldBr = ::SelectObject(cd->hdc, br);
+        HGDIOBJ oldPen = ::SelectObject(cd->hdc, ::GetStockObject(NULL_PEN));
+        ::Polygon(cd->hdc, pts, 3);
+        ::SelectObject(cd->hdc, oldPen);
+        ::SelectObject(cd->hdc, oldBr);
+        ::DeleteObject(br);
+      }
+
+      // column separator
+      if (index >= 0)
+        NModernUI::FillSolid(cd->hdc, rc.right - 1, rc.top + 7,
+            rc.right, rc.bottom - 7, NModernUI::Col_Hairline());
+
+      // bottom edge of the strip
+      NModernUI::FillSolid(cd->hdc, rc.left, rc.bottom - 1, rc.right, rc.bottom,
+          NModernUI::Col_Hairline());
+
+      result = CDRF_SKIPDEFAULT;
+      return true;
+    }
+
+    case CDDS_POSTPAINT:
+    {
+      RECT rc;
+      ::GetClientRect(cd->hdr.hwndFrom, &rc);
+      NModernUI::FillSolid(cd->hdc, rc.left, rc.bottom - 1, rc.right, rc.bottom,
+          NModernUI::Col_Hairline());
+      result = CDRF_DODEFAULT;
+      return true;
+    }
   }
   return false;
 }

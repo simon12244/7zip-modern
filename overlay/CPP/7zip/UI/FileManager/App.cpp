@@ -142,136 +142,481 @@ HRESULT CApp::CreateOnePanel(unsigned panelIndex, const UString &mainPath, const
 }
 
 
-static void CreateToolbar(HWND parent,
-    NControl::CImageList &imageList,
-    NControl::CToolBar &toolBar,
-    bool largeButtons)
+// ---------------------------------------------------------------- modern toolbar
+//
+// The stock comctl32 toolbar cannot express what the redesign needs (icon
+// only layout, rounded hover, hairline separators), so the command bar is a
+// small custom window. It only forwards WM_COMMAND to the main window, which
+// means every existing menu/toolbar handler keeps working as-is.
+
+static LRESULT CALLBACK ModernBarProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-  toolBar.Attach(::CreateWindowEx(0, TOOLBARCLASSNAME, NULL, 0
-      | WS_CHILD
-      | WS_VISIBLE
-      | TBSTYLE_FLAT
-      | TBSTYLE_TOOLTIPS
-      | TBSTYLE_WRAPABLE
-      // | TBSTYLE_AUTOSIZE
-      // | CCS_NORESIZE
-      #ifdef UNDER_CE
-      | CCS_NODIVIDER
-      | CCS_NOPARENTALIGN
-      #endif
-      ,0,0,0,0, parent, NULL, g_hInstance, NULL));
-
-  // TB_BUTTONSTRUCTSIZE message, which is required for
-  // backward compatibility.
-  toolBar.ButtonStructSize();
-
-  imageList.Create(
-      largeButtons ? 48: 24,
-      largeButtons ? 36: 24,
-      ILC_MASK | ILC_COLOR32, 0, 0);
-  toolBar.SetImageList(0, imageList);
+  CModernToolBar *bar = (CModernToolBar *)::GetWindowLongPtr(hwnd, GWLP_USERDATA);
+  if (msg == WM_NCCREATE)
+  {
+    CREATESTRUCT *cs = (CREATESTRUCT *)lParam;
+    bar = (CModernToolBar *)cs->lpCreateParams;
+    ::SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)bar);
+    if (bar)
+      bar->Attach(hwnd);
+  }
+  if (bar)
+    return bar->OnMsg(msg, wParam, lParam);
+  return ::DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
+// TransparentBlt lives in msimg32.dll, which the project does not link.
+// Resolving it lazily keeps the build untouched.
+typedef BOOL (WINAPI *FTransparentBlt)(HDC, int, int, int, int,
+    HDC, int, int, int, int, UINT);
 
-struct CButtonInfo
+static FTransparentBlt GetTransparentBlt()
 {
-  int CommandID;
-  UINT BitmapResID;
-  UINT Bitmap2ResID;
-  UINT StringResID;
-
-  UString GetText() const { return LangString(StringResID); }
-};
-
-static const CButtonInfo g_StandardButtons[] =
-{
-  { IDM_COPY_TO,    IDB_COPY,   IDB_COPY2,   IDS_BUTTON_COPY },
-  { IDM_MOVE_TO,    IDB_MOVE,   IDB_MOVE2,   IDS_BUTTON_MOVE },
-  { IDM_DELETE,     IDB_DELETE, IDB_DELETE2, IDS_BUTTON_DELETE } ,
-  { IDM_PROPERTIES, IDB_INFO,   IDB_INFO2,   IDS_BUTTON_INFO }
-};
-
-static const CButtonInfo g_ArchiveButtons[] =
-{
-  { kMenuCmdID_Toolbar_Add,     IDB_ADD,     IDB_ADD2,     IDS_ADD },
-  { kMenuCmdID_Toolbar_Extract, IDB_EXTRACT, IDB_EXTRACT2, IDS_EXTRACT },
-  { kMenuCmdID_Toolbar_Test,    IDB_TEST,    IDB_TEST2,    IDS_TEST }
-};
-
-static bool SetButtonText(int commandID, const CButtonInfo *buttons, unsigned numButtons, UString &s)
-{
-  for (unsigned i = 0; i < numButtons; i++)
+  static FTransparentBlt fn = NULL;
+  static bool tried = false;
+  if (!tried)
   {
-    const CButtonInfo &b = buttons[i];
-    if (b.CommandID == commandID)
+    tried = true;
+    HMODULE dll = ::LoadLibraryW(L"msimg32.dll");
+    if (dll)
+      fn = (FTransparentBlt)(void *)::GetProcAddress(dll, "TransparentBlt");
+  }
+  return fn;
+}
+
+CModernToolBar::CModernToolBar():
+    _hwnd(NULL),
+    _parent(NULL),
+    _iconSize(24),
+    _barHeight(0),
+    _hot(-1),
+    _pressed(-1),
+    _showText(false),
+    _tip(NULL),
+    _tipIndex(-1)
+{
+}
+
+CModernToolBar::~CModernToolBar()
+{
+  Destroy();
+}
+
+void CModernToolBar::ClearItems()
+{
+  for (unsigned i = 0; i < _items.Size(); i++)
+    if (_items[i].Bmp)
+      ::DeleteObject(_items[i].Bmp);
+  _items.Clear();
+  _hot = _pressed = -1;
+}
+
+void CModernToolBar::Destroy()
+{
+  if (_tip)
+  {
+    ::DestroyWindow(_tip);
+    _tip = NULL;
+  }
+  ClearItems();
+  if (_hwnd)
+  {
+    ::DestroyWindow(_hwnd);
+    _hwnd = NULL;
+  }
+}
+
+bool CModernToolBar::Create(HWND parent)
+{
+  static bool g_Registered = false;
+  if (!g_Registered)
+  {
+    WNDCLASSW wc;
+    memset(&wc, 0, sizeof(wc));
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = ModernBarProc;
+    wc.hInstance = g_hInstance;
+    wc.hCursor = ::LoadCursor(NULL, IDC_ARROW);
+    wc.lpszClassName = Z7_MODERN_BAR_CLASS;
+    if (!::RegisterClassW(&wc))
+      return false;
+    g_Registered = true;
+  }
+
+  _parent = parent;
+  _hwnd = ::CreateWindowExW(0, Z7_MODERN_BAR_CLASS, L"",
+      WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+      0, 0, 0, 0, parent, NULL, g_hInstance, this);
+  if (!_hwnd)
+    return false;
+
+  _tip = ::CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL,
+      WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+      0, 0, 0, 0, _hwnd, NULL, g_hInstance, NULL);
+  if (_tip)
+  {
+    TOOLINFOW ti;
+    memset(&ti, 0, sizeof(ti));
+    ti.cbSize = sizeof(ti);
+    ti.uFlags = TTF_TRACK | TTF_ABSOLUTE;
+    ti.hwnd = _hwnd;
+    ti.uId = 1;
+    ti.lpszText = (LPWSTR)L"";
+    ::SendMessageW(_tip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+    ::SendMessageW(_tip, TTM_SETMAXTIPWIDTH, 0, 400);
+  }
+
+  return true;
+}
+
+void CModernToolBar::AddItem(int cmd, UINT bmpResID, const UString &tip, bool groupEnd, bool right)
+{
+  CItem item;
+  item.Cmd = cmd;
+  item.Tip = tip;
+  item.GroupEnd = groupEnd;
+  item.Right = right;
+  item.Bmp = ::LoadBitmap(g_hInstance, MAKEINTRESOURCE(bmpResID));
+  item.Bw = _iconSize;
+  item.Bh = _iconSize;
+  memset(&item.Rect, 0, sizeof(item.Rect));
+  if (!item.Bmp)
+  {
+    item.Bw = item.Bh = 0;
+  }
+  else
+  {
+    BITMAP bm;
+    if (::GetObject(item.Bmp, sizeof(bm), &bm))
     {
-      s = b.GetText();
-      return true;
+      item.Bw = bm.bmWidth;
+      item.Bh = bm.bmHeight;
     }
   }
-  return false;
+  _items.Add(item);
 }
 
-static void SetButtonText(int commandID, UString &s)
+void CModernToolBar::DrawItemIcon(HDC dc, const CItem &item, int x, int y)
 {
-  if (SetButtonText(commandID, g_StandardButtons, Z7_ARRAY_SIZE(g_StandardButtons), s))
+  if (!item.Bmp)
     return;
-  SetButtonText(commandID, g_ArchiveButtons, Z7_ARRAY_SIZE(g_ArchiveButtons), s);
+  HDC mdc = ::CreateCompatibleDC(dc);
+  if (!mdc)
+    return;
+  HGDIOBJ old = ::SelectObject(mdc, item.Bmp);
+  FTransparentBlt fn = GetTransparentBlt();
+  if (fn)
+    fn(dc, x, y, item.Bw, item.Bh, mdc, 0, 0, item.Bw, item.Bh, RGB(255, 0, 255));
+  else
+    ::BitBlt(dc, x, y, item.Bw, item.Bh, mdc, 0, 0, SRCCOPY);
+  ::SelectObject(mdc, old);
+  ::DeleteDC(mdc);
 }
 
-static void AddButton(
-    NControl::CImageList &imageList,
-    NControl::CToolBar &toolBar,
-    const CButtonInfo &butInfo, bool showText, bool large)
+void CModernToolBar::AutoSize()
 {
-  TBBUTTON but;
-  but.iBitmap = 0;
-  but.idCommand = butInfo.CommandID;
-  but.fsState = TBSTATE_ENABLED;
-  but.fsStyle = TBSTYLE_BUTTON;
-  but.dwData = 0;
+  if (!_hwnd)
+    return;
+  RECT rc;
+  ::GetClientRect(_parent, &rc);
+  Layout(rc.right);
+  ::SetWindowPos(_hwnd, NULL, 0, 0, rc.right, _barHeight,
+      SWP_NOZORDER | SWP_NOACTIVATE);
+}
 
-  UString s = butInfo.GetText();
-  but.iString = 0;
-  if (showText)
-    but.iString = (INT_PTR)(LPCWSTR)s;
+void CModernToolBar::Layout(int width)
+{
+  const int padX    = NModernUI::Scale(10);
+  const int gap     = NModernUI::Scale(2);
+  const int groupGap = NModernUI::Scale(9);
+  const int iconW   = _iconSize;
+  const int btnH    = iconW + NModernUI::Scale(_showText ? 30 : 12);
 
-  but.iBitmap = imageList.GetImageCount();
-  HBITMAP b = ::LoadBitmap(g_hInstance,
-      large ?
-      MAKEINTRESOURCE(butInfo.BitmapResID):
-      MAKEINTRESOURCE(butInfo.Bitmap2ResID));
-  if (b)
+  _barHeight = btnH + NModernUI::Scale(10);
+
+  HDC dc = ::GetDC(_hwnd);
+  HFONT font = NModernUI::Font_Bar();
+  HGDIOBJ oldFont = dc ? ::SelectObject(dc, font) : NULL;
+
+  int x = padX;
+  const int y = NModernUI::Scale(5);
+
+  for (unsigned i = 0; i < _items.Size(); i++)
   {
-    imageList.AddMasked(b, RGB(255, 0, 255));
-    ::DeleteObject(b);
+    CItem &item = _items[i];
+    if (item.Right)
+      continue;
+
+    int w = _showText ? NModernUI::Scale(58) : NModernUI::Scale(44);
+    if (_showText && dc && !item.Tip.IsEmpty())
+    {
+      SIZE sz;
+      int textW = 0;
+      if (::GetTextExtentPoint32W(dc, item.Tip, item.Tip.Len(), &sz))
+        textW = sz.cx;
+      if (textW + NModernUI::Scale(16) > w)
+        w = textW + NModernUI::Scale(16);
+    }
+    else
+    {
+      w = MyMax(w, iconW + NModernUI::Scale(16));
+    }
+
+    item.Rect.left = x;
+    item.Rect.top = y;
+    item.Rect.right = x + w;
+    item.Rect.bottom = y + btnH;
+
+    x += w + gap;
+    if (item.GroupEnd)
+      x += groupGap;
   }
-  #ifdef _UNICODE
-  toolBar.AddButton(1, &but);
-  #else
-  toolBar.AddButtonW(1, &but);
-  #endif
+
+  if (oldFont && dc)
+  {
+    ::SelectObject(dc, oldFont);
+    ::ReleaseDC(_hwnd, dc);
+  }
+
+  // right aligned commands
+  int rx = width - padX;
+  for (int i = (int)_items.Size() - 1; i >= 0; i--)
+  {
+    CItem &item = _items[i];
+    if (!item.Right)
+      continue;
+    int w = _showText ? NModernUI::Scale(58) : NModernUI::Scale(44);
+    w = MyMax(w, iconW + NModernUI::Scale(16));
+    rx -= w;
+    item.Rect.left = rx;
+    item.Rect.top = y;
+    item.Rect.right = rx + w;
+    item.Rect.bottom = y + btnH;
+    rx -= gap;
+  }
+}
+
+int CModernToolBar::HitTest(int px, int py) const
+{
+  for (unsigned i = 0; i < _items.Size(); i++)
+  {
+    const RECT &r = _items[i].Rect;
+    if (px >= r.left && px < r.right && py >= r.top && py < r.bottom)
+      return (int)i;
+  }
+  return -1;
+}
+
+void CModernToolBar::Paint(HDC dc)
+{
+  RECT rc;
+  ::GetClientRect(_hwnd, &rc);
+  NModernUI::FillSolid(dc, rc, NModernUI::Col_Bar());
+
+  const int radius = NModernUI::Scale(8);
+
+  for (unsigned i = 0; i < _items.Size(); i++)
+  {
+    const CItem &item = _items[i];
+    if ((int)i == _pressed)
+      NModernUI::FillRound(dc, item.Rect, radius, NModernUI::Col_Pressed());
+    else if ((int)i == _hot)
+      NModernUI::FillRound(dc, item.Rect, radius, NModernUI::Col_Hover());
+  }
+
+  const int sepTop = NModernUI::Scale(12);
+  const int sepBottom = NModernUI::Scale(28);
+  for (unsigned i = 0; i < _items.Size(); i++)
+  {
+    const CItem &item = _items[i];
+    if (!item.GroupEnd || item.Right || i + 1 >= _items.Size())
+      continue;
+    const int sx = item.Rect.right + NModernUI::Scale(5);
+    NModernUI::FillSolid(dc, sx, sepTop, sx + 1, sepBottom, NModernUI::Col_Hairline());
+  }
+
+  const int iconTop = NModernUI::Scale(6);
+  HFONT font = NModernUI::Font_Bar();
+
+  for (unsigned i = 0; i < _items.Size(); i++)
+  {
+    const CItem &item = _items[i];
+    if (item.Bmp)
+    {
+      const int ix = item.Rect.left + ((item.Rect.right - item.Rect.left) - item.Bw) / 2;
+      const int iy = item.Rect.top + iconTop;
+      DrawItemIcon(dc, item, ix, iy);
+    }
+    if (_showText && !item.Tip.IsEmpty())
+    {
+      RECT tr = item.Rect;
+      tr.top = item.Rect.top + iconTop + _iconSize + NModernUI::Scale(2);
+      NModernUI::DrawTextIn(dc, tr, item.Tip, NModernUI::Col_InkDim(), font,
+          DT_CENTER | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+  }
+
+  // hairline that separates the bar from the panels
+  NModernUI::FillSolid(dc, rc.left, rc.bottom - 1, rc.right, rc.bottom,
+      NModernUI::Col_Hairline());
+}
+
+void CModernToolBar::UpdateTip(int index)
+{
+  if (!_tip)
+    return;
+  if (index == _tipIndex)
+    return;
+  _tipIndex = index;
+
+  TOOLINFOW ti;
+  memset(&ti, 0, sizeof(ti));
+  ti.cbSize = sizeof(ti);
+  ti.hwnd = _hwnd;
+  ti.uId = 1;
+
+  if (index < 0 || (unsigned)index >= _items.Size() || _items[index].Tip.IsEmpty())
+  {
+    ::SendMessageW(_tip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&ti);
+    return;
+  }
+
+  _tipText = _items[index].Tip;
+  ti.lpszText = (LPWSTR)(LPCWSTR)_tipText;
+  ::SendMessageW(_tip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&ti);
+
+  RECT r = _items[index].Rect;
+  POINT pt;
+  pt.x = r.left;
+  pt.y = r.bottom + NModernUI::Scale(6);
+  ::ClientToScreen(_hwnd, &pt);
+  ::SendMessageW(_tip, TTM_TRACKPOSITION, 0, MAKELPARAM(pt.x, pt.y));
+  ::SendMessageW(_tip, TTM_TRACKACTIVATE, TRUE, (LPARAM)&ti);
+}
+
+LRESULT CModernToolBar::OnMsg(UINT msg, WPARAM wParam, LPARAM lParam)
+{
+  switch (msg)
+  {
+    case WM_ERASEBKGND:
+      return 1;
+
+    case WM_SIZE:
+      Layout(LOWORD(lParam));
+      ::InvalidateRect(_hwnd, NULL, FALSE);
+      return 0;
+
+    case WM_PAINT:
+    {
+      PAINTSTRUCT ps;
+      HDC dc = ::BeginPaint(_hwnd, &ps);
+      Paint(dc);
+      ::EndPaint(_hwnd, &ps);
+      return 0;
+    }
+
+    case WM_MOUSEMOVE:
+    {
+      const int x = (int)(short)LOWORD(lParam);
+      const int y = (int)(short)HIWORD(lParam);
+      const int index = HitTest(x, y);
+      if (index != _hot)
+      {
+        _hot = index;
+        UpdateTip(index);
+        ::InvalidateRect(_hwnd, NULL, FALSE);
+      }
+      TRACKMOUSEEVENT tme;
+      tme.cbSize = sizeof(tme);
+      tme.dwFlags = TME_LEAVE;
+      tme.hwndTrack = _hwnd;
+      tme.dwHoverTime = 0;
+      ::TrackMouseEvent(&tme);
+      return 0;
+    }
+
+    case WM_MOUSELEAVE:
+      _hot = -1;
+      UpdateTip(-1);
+      ::InvalidateRect(_hwnd, NULL, FALSE);
+      return 0;
+
+    case WM_LBUTTONDOWN:
+    {
+      const int index = HitTest((int)(short)LOWORD(lParam), (int)(short)HIWORD(lParam));
+      if (index >= 0)
+      {
+        _pressed = index;
+        ::SetCapture(_hwnd);
+        ::InvalidateRect(_hwnd, NULL, FALSE);
+      }
+      return 0;
+    }
+
+    case WM_LBUTTONUP:
+    {
+      const int index = HitTest((int)(short)LOWORD(lParam), (int)(short)HIWORD(lParam));
+      const int pressed = _pressed;
+      _pressed = -1;
+      if (::GetCapture() == _hwnd)
+        ::ReleaseCapture();
+      ::InvalidateRect(_hwnd, NULL, FALSE);
+      if (index >= 0 && index == pressed && (unsigned)index < _items.Size())
+      {
+        UpdateTip(-1);
+        ::SendMessage(_parent, WM_COMMAND,
+            MAKEWPARAM(_items[index].Cmd, 0), 0);
+      }
+      return 0;
+    }
+
+    case WM_CAPTURECHANGED:
+      if (_pressed >= 0)
+      {
+        _pressed = -1;
+        ::InvalidateRect(_hwnd, NULL, FALSE);
+      }
+      return 0;
+  }
+  return ::DefWindowProc(_hwnd, msg, wParam, lParam);
 }
 
 void CApp::ReloadToolbars()
 {
-  _buttonsImageList.Destroy();
   _toolBar.Destroy();
 
+  if (!ShowArchiveToolbar && !ShowStandardToolbar)
+    return;
 
-  if (ShowArchiveToolbar || ShowStandardToolbar)
+  if (!_toolBar.Create(_window))
+    return;
+
+  _toolBar.SetShowText(ShowButtonsLables);
+  _toolBar.SetIconSize(LargeButtons ? 32 : 28);
+
+  if (ShowArchiveToolbar)
   {
-    CreateToolbar(_window, _buttonsImageList, _toolBar, LargeButtons);
-    unsigned i;
-    if (ShowArchiveToolbar)
-      for (i = 0; i < Z7_ARRAY_SIZE(g_ArchiveButtons); i++)
-        AddButton(_buttonsImageList, _toolBar, g_ArchiveButtons[i], ShowButtonsLables, LargeButtons);
-    if (ShowStandardToolbar)
-      for (i = 0; i < Z7_ARRAY_SIZE(g_StandardButtons); i++)
-        AddButton(_buttonsImageList, _toolBar, g_StandardButtons[i], ShowButtonsLables, LargeButtons);
-
-    _toolBar.AutoSize();
+    _toolBar.AddItem(kMenuCmdID_Toolbar_Add, LargeButtons ? IDB_ADD : IDB_ADD2,
+        LangString(IDS_ADD), false, false);
+    _toolBar.AddItem(kMenuCmdID_Toolbar_Extract, LargeButtons ? IDB_EXTRACT : IDB_EXTRACT2,
+        LangString(IDS_EXTRACT), false, false);
+    _toolBar.AddItem(kMenuCmdID_Toolbar_Test, LargeButtons ? IDB_TEST : IDB_TEST2,
+        LangString(IDS_TEST), true, false);
   }
+
+  if (ShowStandardToolbar)
+  {
+    _toolBar.AddItem(IDM_COPY_TO, LargeButtons ? IDB_COPY : IDB_COPY2,
+        LangString(IDS_BUTTON_COPY), false, false);
+    _toolBar.AddItem(IDM_MOVE_TO, LargeButtons ? IDB_MOVE : IDB_MOVE2,
+        LangString(IDS_BUTTON_MOVE), false, false);
+    _toolBar.AddItem(IDM_DELETE, LargeButtons ? IDB_DELETE : IDB_DELETE2,
+        LangString(IDS_BUTTON_DELETE), false, false);
+    _toolBar.AddItem(IDM_PROPERTIES, LargeButtons ? IDB_INFO : IDB_INFO2,
+        LangString(IDS_BUTTON_INFO), true, false);
+  }
+
+  _toolBar.AutoSize();
 }
 
 void CApp::SaveToolbarChanges()
@@ -934,6 +1279,23 @@ int CApp::GetFocusedPanelIndex() const
 static UString g_ToolTipBuffer;
 static CSysString g_ToolTipBufferSys;
 
+// Tooltip text for the remaining stock toolbars (panel header, dialogs).
+// The modern command bar carries its own tooltips.
+static void Modern_GetCommandTip(int cmd, UString &s)
+{
+  switch (cmd)
+  {
+    case kMenuCmdID_Toolbar_Add:     s = LangString(IDS_ADD); break;
+    case kMenuCmdID_Toolbar_Extract: s = LangString(IDS_EXTRACT); break;
+    case kMenuCmdID_Toolbar_Test:    s = LangString(IDS_TEST); break;
+    case IDM_COPY_TO:                s = LangString(IDS_BUTTON_COPY); break;
+    case IDM_MOVE_TO:                s = LangString(IDS_BUTTON_MOVE); break;
+    case IDM_DELETE:                 s = LangString(IDS_BUTTON_DELETE); break;
+    case IDM_PROPERTIES:             s = LangString(IDS_BUTTON_INFO); break;
+    default: s.Empty();
+  }
+}
+
 void CApp::OnNotify(int /* ctrlID */, LPNMHDR pnmh)
 {
   {
@@ -942,7 +1304,7 @@ void CApp::OnNotify(int /* ctrlID */, LPNMHDR pnmh)
       LPNMTTDISPINFO info = (LPNMTTDISPINFO)pnmh;
       info->hinst = NULL;
       g_ToolTipBuffer.Empty();
-      SetButtonText((int)info->hdr.idFrom, g_ToolTipBuffer);
+      Modern_GetCommandTip((int)info->hdr.idFrom, g_ToolTipBuffer);
       g_ToolTipBufferSys = GetSystemString(g_ToolTipBuffer);
       info->lpszText = g_ToolTipBufferSys.Ptr_non_const();
       return;
@@ -953,7 +1315,7 @@ void CApp::OnNotify(int /* ctrlID */, LPNMHDR pnmh)
       LPNMTTDISPINFOW info = (LPNMTTDISPINFOW)pnmh;
       info->hinst = NULL;
       g_ToolTipBuffer.Empty();
-      SetButtonText((int)info->hdr.idFrom, g_ToolTipBuffer);
+      Modern_GetCommandTip((int)info->hdr.idFrom, g_ToolTipBuffer);
       info->lpszText = g_ToolTipBuffer.Ptr_non_const();
       return;
     }

@@ -79,6 +79,217 @@ static HFONT Modern_CreateListFont()
 
 extern HINSTANCE g_hInstance;
 
+// 7-Zip Modern: chrome for the stock controls ------------------------------
+//
+// The path bar, its band and the status bar are stock comctl32 controls. They
+// keep all their behaviour; only the painting is overridden so that they stop
+// looking like Windows 95. Subclassing through GetProp/SetProp avoids adding
+// a commctrl version dependency.
+
+static const TCHAR * const kModernOldProc = TEXT("7zModernOldProc");
+static HBRUSH g_ModernFieldBrush = NULL;
+
+static LRESULT CALLBACK Modern_ChromeProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+  const WNDPROC oldProc = (WNDPROC)::GetProp(hwnd, kModernOldProc);
+  if (!oldProc)
+    return ::DefWindowProc(hwnd, msg, wParam, lParam);
+
+  switch (msg)
+  {
+    case WM_ERASEBKGND:
+    {
+      RECT rc;
+      ::GetClientRect(hwnd, &rc);
+      NModernUI::FillSolid((HDC)wParam, rc, NModernUI::Col_Band());
+      return 1;
+    }
+
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORSTATIC:
+    {
+      HDC dc = (HDC)wParam;
+      ::SetBkColor(dc, NModernUI::Col_Field());
+      ::SetTextColor(dc, NModernUI::Col_Ink());
+      if (!g_ModernFieldBrush)
+        g_ModernFieldBrush = ::CreateSolidBrush(NModernUI::Col_Field());
+      return (LRESULT)g_ModernFieldBrush;
+    }
+
+    case WM_CTLCOLORBTN:
+    {
+      if (!g_ModernFieldBrush)
+        g_ModernFieldBrush = ::CreateSolidBrush(NModernUI::Col_Field());
+      return (LRESULT)g_ModernFieldBrush;
+    }
+
+    case WM_NOTIFY:
+    {
+      LPNMHDR hdr = (LPNMHDR)lParam;
+      if (hdr && hdr->code == NM_CUSTOMDRAW)
+      {
+        LPNMTBCUSTOMDRAW cd = (LPNMTBCUSTOMDRAW)lParam;
+        if (cd->nmcd.dwDrawStage == CDDS_PREPAINT)
+        {
+          cd->clrBtnFace = NModernUI::Col_Band();
+          cd->clrBtnHighlight = NModernUI::Col_Band();
+          cd->clrMark = NModernUI::Col_Hairline();
+          cd->clrText = NModernUI::Col_Ink();
+          cd->clrHighlightHotTrack = NModernUI::Col_Hover();
+          cd->nStringBkMode = TRANSPARENT;
+          return CDRF_NEWFONT;
+        }
+      }
+      break;
+    }
+
+    case WM_PAINT:
+    {
+      const LRESULT res = ::CallWindowProc(oldProc, hwnd, msg, wParam, lParam);
+      HDC dc = ::GetDC(hwnd);
+      if (dc)
+      {
+        RECT rc;
+        ::GetClientRect(hwnd, &rc);
+        NModernUI::FillSolid(dc, rc.left, rc.bottom - 1, rc.right, rc.bottom,
+            NModernUI::Col_Hairline());
+        ::ReleaseDC(hwnd, dc);
+      }
+      return res;
+    }
+  }
+
+  return ::CallWindowProc(oldProc, hwnd, msg, wParam, lParam);
+}
+
+static void Modern_Subclass(HWND hwnd)
+{
+  if (!hwnd || ::GetProp(hwnd, kModernOldProc))
+    return;
+  const WNDPROC oldProc = (WNDPROC)::SetWindowLongPtr(hwnd, GWLP_WNDPROC,
+      (LONG_PTR)Modern_ChromeProc);
+  ::SetProp(hwnd, kModernOldProc, (HANDLE)oldProc);
+}
+
+// The status bar needs a proc of its own. comctl32 draws the stock panes with
+// a raised bevel and there is no notification that lets us restyle them, so
+// the parts are measured with SB_GETPARTS and painted from scratch. Every
+// other message is forwarded, which keeps the stored text, the owner
+// notifications and the auto-invalidation on SB_SETTEXT working.
+
+static const TCHAR * const kModernStatusOldProc = TEXT("7zModernStatusOldProc");
+
+static LRESULT CALLBACK Modern_StatusProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+  const WNDPROC oldProc = (WNDPROC)::GetProp(hwnd, kModernStatusOldProc);
+  if (!oldProc)
+    return ::DefWindowProc(hwnd, msg, wParam, lParam);
+
+  if (msg == WM_ERASEBKGND)
+    return 1;
+
+  if (msg == WM_PAINT)
+  {
+    PAINTSTRUCT ps;
+    HDC dc = ::BeginPaint(hwnd, &ps);
+    if (!dc)
+      return 0;
+
+    RECT rc;
+    ::GetClientRect(hwnd, &rc);
+    NModernUI::FillSolid(dc, rc, NModernUI::Col_Band());
+    // a single hairline instead of the sunken top edge
+    NModernUI::FillSolid(dc, rc.left, rc.top, rc.right, rc.top + 1,
+        NModernUI::Col_Hairline());
+
+    const int kMaxParts = 16;
+    int edges[kMaxParts];
+    ::ZeroMemory(edges, sizeof(edges));
+    const int numParts = (int)::SendMessageW(hwnd, SB_GETPARTS, kMaxParts,
+        (LPARAM)edges);
+
+    // Reuse the control's font: the bar height was measured from it.
+    HFONT font = (HFONT)::SendMessageW(hwnd, WM_GETFONT, 0, 0);
+    if (!font)
+      font = NModernUI::Font_Bar();
+
+    int left = rc.left;
+    for (int i = 0; i < numParts && i < kMaxParts; i++)
+    {
+      int right = edges[i];
+      if (right <= 0 || right > rc.right)
+        right = rc.right;
+
+      if (right > left)
+      {
+        WCHAR text[512];
+        text[0] = 0;
+        const LRESULT res = ::SendMessageW(hwnd, SB_GETTEXTW, (WPARAM)i,
+            (LPARAM)text);
+        // SBT_OWNERDRAW parts are not used by the file manager; skip them so
+        // that their empty text does not wipe the band.
+        if (LOWORD(res) != SBT_OWNERDRAW && text[0])
+        {
+          RECT tr = rc;
+          tr.left = left + NModernUI::Scale(8);
+          tr.right = right - NModernUI::Scale(8);
+          ::IntersectRect(&tr, &tr, &rc);
+          NModernUI::DrawTextIn(dc, tr, text, NModernUI::Col_InkDim(),
+              font,
+              DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
+      }
+
+      // hairline between adjacent parts, inset so it reads as a separator and
+      // not as a box
+      if (i + 1 < numParts && right < rc.right)
+        NModernUI::FillSolid(dc, right - 1, rc.top + NModernUI::Scale(7),
+            right, rc.bottom - NModernUI::Scale(7),
+            NModernUI::Col_Hairline());
+
+      left = right;
+    }
+
+    ::EndPaint(hwnd, &ps);
+    return 0;
+  }
+
+  return ::CallWindowProc(oldProc, hwnd, msg, wParam, lParam);
+}
+
+static void Modern_StyleHeader(HWND rebar, HWND toolBar, HWND combo, HWND edit)
+{
+  if (rebar)
+    Modern_Subclass(rebar);
+  if (toolBar)
+    Modern_Subclass(toolBar);
+  if (combo)
+  {
+    ::SendMessageW(combo, WM_SETFONT, (WPARAM)NModernUI::Font_Header(), TRUE);
+    NModernUI::RoundCorners(combo, 10);
+  }
+  if (edit)
+    ::SendMessageW(edit, WM_SETFONT, (WPARAM)NModernUI::Font_Header(), TRUE);
+}
+
+static void Modern_RefreshHeader(HWND rebar)
+{
+  if (rebar)
+    ::InvalidateRect(rebar, NULL, TRUE);
+}
+
+static void Modern_StyleStatusBar(HWND statusBar)
+{
+  if (!statusBar || ::GetProp(statusBar, kModernStatusOldProc))
+    return;
+  ::SendMessage(statusBar, SB_SETBKCOLOR, 0, (LPARAM)NModernUI::Col_Band());
+  // The bar derives its height from this font, so it stays in proportion.
+  ::SendMessageW(statusBar, WM_SETFONT, (WPARAM)NModernUI::Font_Bar(), TRUE);
+  const WNDPROC oldProc = (WNDPROC)::SetWindowLongPtr(statusBar, GWLP_WNDPROC,
+      (LONG_PTR)Modern_StatusProc);
+  ::SetProp(statusBar, kModernStatusOldProc, (HANDLE)oldProc);
+}
+
 void CPanel::ReleasePanel()
 {
   Disable_Processing_Timer_Notify_StatusBar();
@@ -461,7 +672,12 @@ bool CPanel::OnCreate(CREATESTRUCT * /* createStruct */)
   {
     HFONT listFont = Modern_CreateListFont();
     if (listFont)
+    {
       ::SendMessage((HWND)_listView, WM_SETFONT, (WPARAM)listFont, TRUE);
+      const HWND headerWnd = (HWND)::SendMessageW((HWND)_listView, LVM_GETHEADER, 0, 0);
+      if (headerWnd)
+        ::SendMessageW(headerWnd, WM_SETFONT, (WPARAM)NModernUI::Font_Header(), TRUE);
+    }
   }
 
   // _exStyle |= LVS_EX_HEADERDRAGDROP;
@@ -484,7 +700,7 @@ bool CPanel::OnCreate(CREATESTRUCT * /* createStruct */)
   const TBBUTTON tbb[] =
   {
     // {0, 0, TBSTATE_ENABLED, BTNS_SEP, 0L, 0},
-    {VIEW_PARENTFOLDER, kParentFolderID, TBSTATE_ENABLED, BTNS_BUTTON, { 0, 0 }, 0, 0 },
+    {0, kParentFolderID, TBSTATE_ENABLED, BTNS_BUTTON, { 0, 0 }, 0, 0 },
     // {0, 0, TBSTATE_ENABLED, BTNS_SEP, 0L, 0},
     // {VIEW_NEWFOLDER, kCreateFolderID, TBSTATE_ENABLED, BTNS_BUTTON, 0L, 0},
   };
@@ -499,15 +715,15 @@ bool CPanel::OnCreate(CREATESTRUCT * /* createStruct */)
     
     // if there is no CCS_NOPARENTALIGN, there is space of some pixels after rebar (Incorrect GetWindowRect ?)
 
+    // 7-Zip Modern: a borderless band instead of the classic 3D rebar.
     _headerReBar.Attach(::CreateWindowEx(WS_EX_TOOLWINDOW,
       REBARCLASSNAME,
-      NULL, WS_VISIBLE | WS_BORDER | WS_CHILD |
+      NULL, WS_VISIBLE | WS_CHILD |
       WS_CLIPCHILDREN | WS_CLIPSIBLINGS
       | CCS_NODIVIDER
       | CCS_NOPARENTALIGN
       | CCS_TOP
       | RBS_VARHEIGHT
-      | RBS_BANDBORDERS
       ,0,0,0,0, *this, NULL, g_hInstance, NULL));
   }
 
@@ -532,6 +748,21 @@ bool CPanel::OnCreate(CREATESTRUCT * /* createStruct */)
       (LPCTBBUTTON)&tbb, Z7_ARRAY_SIZE(tbb),
       0, 0, 0, 0, sizeof (TBBUTTON)));
 
+  // 7-Zip Modern: swap the comctl32 "parent folder" artwork for our own glyph
+  {
+    HIMAGELIST il = ImageList_Create(16, 16, ILC_COLOR32 | ILC_MASK, 1, 0);
+    if (il)
+    {
+      HBITMAP bmp = ::LoadBitmap(g_hInstance, MAKEINTRESOURCE(IDB_UP));
+      if (bmp)
+      {
+        ImageList_AddMasked(il, bmp, RGB(255, 0, 255));
+        ::DeleteObject(bmp);
+      }
+      ::SendMessageW((HWND)_headerToolBar, TB_SETIMAGELIST, 0, (LPARAM)il);
+    }
+  }
+
   #ifndef UNDER_CE
   // Load ComboBoxEx class
   icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
@@ -546,7 +777,7 @@ bool CPanel::OnCreate(CREATESTRUCT * /* createStruct */)
       WC_COMBOBOXEXW
       #endif
       , NULL,
-    WS_BORDER | WS_VISIBLE |WS_CHILD | CBS_DROPDOWN | CBS_AUTOHSCROLL,
+    WS_VISIBLE | WS_CHILD | CBS_DROPDOWN | CBS_AUTOHSCROLL,
       0, 0, 100, 620,
       (_headerReBar ? _headerToolBar : (HWND)*this),
       (HMENU)(UINT_PTR)(_comboBoxID),
@@ -596,7 +827,9 @@ bool CPanel::OnCreate(CREATESTRUCT * /* createStruct */)
     // rbBand.cbSize = sizeof(rbBand);  // for debug
     // rbBand.cbSize = REBARBANDINFO_V3_SIZE; // for debug
     rbBand.cbSize = my_compatib_REBARBANDINFO_size;
-    rbBand.fMask = RBBIM_STYLE | RBBIM_CHILD | RBBIM_CHILDSIZE | RBBIM_SIZE;
+    rbBand.fMask = RBBIM_STYLE | RBBIM_CHILD | RBBIM_CHILDSIZE | RBBIM_SIZE | RBBIM_COLORS;
+    rbBand.clrFore = NModernUI::Col_Ink();
+    rbBand.clrBack = NModernUI::Col_Band();
     rbBand.fStyle = RBBS_NOGRIPPER;
     rbBand.cxMinChild = (UINT)size.cx;
     rbBand.cyMinChild = (UINT)size.cy;
@@ -615,11 +848,14 @@ bool CPanel::OnCreate(CREATESTRUCT * /* createStruct */)
     // _headerReBar.MaximizeBand(1, false);
   }
 
+  Modern_StyleHeader(_headerReBar, _headerToolBar, _headerComboBox, _comboBoxEdit);
+
   _statusBar.Create(WS_CHILD | WS_VISIBLE, L"Status", (*this), _statusBarID);
   // _statusBar2.Create(WS_CHILD | WS_VISIBLE, L"Status", (*this), _statusBarID + 1);
 
   const int sizes[] = {220, 320, 420, -1};
   _statusBar.SetParts(4, sizes);
+  Modern_StyleStatusBar(_statusBar);
   // _statusBar2.SetParts(5, sizes);
 
   /*
@@ -676,6 +912,8 @@ void CPanel::ChangeWindowSize(int xSize, int ySize)
   }
   _listView.Move(0, kHeaderSize, xSize, yListViewSize);
   _statusBar.Move(0, kHeaderSize + yListViewSize, xSize, kStatusBarSize);
+  NModernUI::RoundCorners(_headerComboBox, 10);
+  Modern_RefreshHeader(_headerReBar);
   // _statusBar2.MoveWindow(0, kHeaderSize + yListViewSize + kStatusBarSize, xSize, kStatusBar2Size);
   // _statusBar.MoveWindow(0, 100, xSize, kStatusBarSize);
   // _statusBar2.MoveWindow(0, 200, xSize, kStatusBar2Size);

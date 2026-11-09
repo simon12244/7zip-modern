@@ -7,8 +7,8 @@ fills, magenta colour keys) with modern flat icons: rounded geometry, soft
 tinted fills, 2px strokes and a restrained palette.
 
 Output matches the exact specs the 7-Zip toolbar expects:
-    <Name>.bmp    48x36   large buttons
-    <Name>2.bmp   24x24   small buttons
+    <Name>.bmp    32x32   large buttons
+    <Name>2.bmp   28x28   regular buttons
 Background stays magenta (0xFF00FF) because the image list is created with
 ILC_MASK and derives its transparency mask from that colour key.
 
@@ -48,7 +48,7 @@ def tint(color, alpha=0.16):
 
 
 class Canvas:
-    def __init__(self, size, pad_ratio=0.10):
+    def __init__(self, size, pad_ratio=0.02):
         self.size = size
         self.w, self.h = size
         self.s = max(self.w, self.h)
@@ -156,6 +156,20 @@ def draw_info(d, c, stroke):
                fill=SLATE, width=max(1, stroke - 1))
 
 
+
+
+def draw_up(d, c, stroke):
+    """Chevron pointing up with a baseline: "parent folder" without the
+    legacy yellow folder artwork."""
+    d.line([(c.x(0.18), c.y(0.86)), (c.x(0.82), c.y(0.86))],
+           fill=SLATE, width=stroke)
+    d.line([(c.x(0.50), c.y(0.74)), (c.x(0.50), c.y(0.22))],
+           fill=SLATE, width=stroke)
+    d.line([(c.x(0.28), c.y(0.44)), (c.x(0.50), c.y(0.20)),
+            (c.x(0.72), c.y(0.44))],
+           fill=SLATE, width=stroke, joint="curve")
+
+
 PAINTERS = {
     "Add": draw_add,
     "Extract": draw_extract,
@@ -164,6 +178,7 @@ PAINTERS = {
     "Move": draw_move,
     "Delete": draw_delete,
     "Info": draw_info,
+    "Up": draw_up,
 }
 
 
@@ -210,7 +225,8 @@ def main():
 
     written = []
     for name in PAINTERS:
-        for suffix, size in (("", (48, 36)), ("2", (24, 24))):
+        sizes = ((16, 16), (16, 16)) if name == "Up" else ((32, 32), (28, 28))
+        for suffix, size in (("", sizes[0]), ("2", sizes[1])):
             im = render(name, size)
             path = os.path.join(outdir, f"{name}{suffix}.bmp")
             im.save(path, "BMP")
@@ -224,7 +240,7 @@ def main():
         cols = len(PAINTERS)
         sheet = Image.new("RGB", (cols * 72, 2 * 72), (248, 249, 251))
         for i, name in enumerate(PAINTERS):
-            for row, size in enumerate(((48, 36), (24, 24))):
+            for row, size in enumerate(((32, 32), (28, 28))):
                 im = render(name, size)
                 bg = Image.new("RGB", im.size, (248, 249, 251))
                 im = im.convert("RGB")
