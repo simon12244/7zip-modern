@@ -1,9 +1,19 @@
 # 构建产物
 installer/output/
+dist/
+src/
 
-# 下载的第三方安装包（发布时通过脚本重新获取，不入库大文件）
+# 下载的第三方源码 / 安装包（由脚本重新获取，不入库大文件）
 downloads/*.exe
 downloads/*.msi
+downloads/*.tar.xz
+
+# 测试中间物
+testdir/
+ctxmenu-test.png
+dll-swap.txt
 
 # 日志
 *.log
+
+dist_bak/

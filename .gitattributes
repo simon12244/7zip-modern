@@ -1,0 +1,6 @@
+# 补丁文件必须保持原样，否则 git apply 会失败
+patches/*.patch -text
+
+# Windows 脚本使用 CRLF
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

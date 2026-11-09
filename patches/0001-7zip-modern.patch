@@ -1,0 +1,132 @@
+--- a/CPP/7zip/UI/Common/ZipRegistry.h
++++ b/CPP/7zip/UI/Common/ZipRegistry.h
+@@ -192,6 +192,8 @@
+   CBoolPair Cascaded;
+   CBoolPair MenuIcons;
+   CBoolPair ElimDup;
++  // 7-Zip Modern: top-level "extract here" quick action (default: on)
++  CBoolPair QuickExtractHere;
+   
+   bool Flags_Def;
+   UInt32 Flags;
+--- a/CPP/7zip/UI/Common/ZipRegistry.cpp
++++ b/CPP/7zip/UI/Common/ZipRegistry.cpp
+@@ -541,6 +541,8 @@
+ static LPCTSTR const kContextMenu = TEXT("ContextMenu");
+ static LPCTSTR const kMenuIcons = TEXT("MenuIcons");
+ static LPCTSTR const kElimDup = TEXT("ElimDupExtract");
++// 7-Zip Modern
++static LPCTSTR const kQuickExtractHere = TEXT("QuickExtractHere");
+ static LPCTSTR const kWriteZoneId = TEXT("WriteZoneIdExtract");
+ 
+ void CContextMenuInfo::Save() const
+@@ -552,6 +554,7 @@
+   Key_Set_BoolPair(key, kCascadedMenu, Cascaded);
+   Key_Set_BoolPair(key, kMenuIcons, MenuIcons);
+   Key_Set_BoolPair(key, kElimDup, ElimDup);
++  Key_Set_BoolPair(key, kQuickExtractHere, QuickExtractHere);
+ 
+   Key_Set_UInt32(key, kWriteZoneId, WriteZone);
+   
+@@ -570,6 +573,10 @@
+   ElimDup.Val = true;
+   ElimDup.Def = false;
+ 
++  // 7-Zip Modern: quick extract enabled by default
++  QuickExtractHere.Val = true;
++  QuickExtractHere.Def = false;
++
+   WriteZone = (UInt32)(Int32)-1;
+ 
+   /* we can disable email items by default,
+@@ -591,6 +598,7 @@
+   
+   Key_Get_BoolPair_true(key, kCascadedMenu, Cascaded);
+   Key_Get_BoolPair_true(key, kElimDup, ElimDup);
++  Key_Get_BoolPair_true(key, kQuickExtractHere, QuickExtractHere);
+   Key_Get_BoolPair(key, kMenuIcons, MenuIcons);
+ 
+   Key_Get_UInt32(key, kWriteZoneId, WriteZone);
+--- a/CPP/7zip/UI/Explorer/ContextMenu.cpp
++++ b/CPP/7zip/UI/Explorer/ContextMenu.cpp
+@@ -742,6 +742,30 @@
+   {
+     if (!fi0.IsDir() && DoNeedExtract(fs2us(fi0.Name), finder))
+     {
++      // === 7-Zip Modern: top-level "Extract Here" quick action ===
++      // Upstream buries extraction inside the 7-Zip submenu. We add a one-click
++      // entry at the root of the context menu for a single archive.
++      // Disable with HKCU\Software\7-Zip\Options\QuickExtractHere = 0.
++      if (hMenu && ci.Cascaded.Val && ci.QuickExtractHere.Val)
++      {
++        UString baseFolder = fs2us(folderPrefix);
++        if (_dropMode)
++          baseFolder = _dropPath;
++
++        CCommandMapItem cmi;
++        cmi.Folder = baseFolder;
++        AddCommand(kExtractHere, mainString, cmi);
++
++        CMenu topMenu;
++        topMenu.Attach(hMenu);
++        MyInsertMenu(topMenu, indexMenu++, currentCommandID++, mainString, bitmap);
++
++        CMenuItem sepItem;
++        sepItem.fType = MFT_SEPARATOR;
++        sepItem.fMask = MIIM_TYPE;
++        topMenu.InsertItem(indexMenu++, true, sepItem);
++      }
++
+       // Open
+       const bool thereIsMainOpenItem = ((contextMenuFlags & NContextMenuFlags::kOpen) != 0);
+       if (thereIsMainOpenItem)
+--- a/CPP/7zip/UI/FileManager/App.cpp
++++ b/CPP/7zip/UI/FileManager/App.cpp
+@@ -77,7 +77,8 @@
+ 
+   ShowSystemMenu = st.ShowSystemMenu;
+ 
+-  DWORD extendedStyle = LVS_EX_HEADERDRAGDROP;
++  // 7-Zip Modern: double buffering removes the flicker while scrolling/resizing
++  DWORD extendedStyle = LVS_EX_HEADERDRAGDROP | LVS_EX_DOUBLEBUFFER;
+   if (st.FullRow)
+     extendedStyle |= LVS_EX_FULLROWSELECT;
+   if (st.ShowGrid)
+@@ -964,7 +965,7 @@
+ {
+   UString path = GetFocusedPanel()._currentFolderPrefix;
+   if (path.IsEmpty())
+-    path = "7-Zip"; // LangString(IDS_APP_TITLE);
++    path = "7-Zip Modern"; // LangString(IDS_APP_TITLE);
+   if (!always && path == PrevTitle)
+     return;
+   PrevTitle = path;
+--- a/CPP/7zip/UI/FileManager/FM.cpp
++++ b/CPP/7zip/UI/FileManager/FM.cpp
+@@ -246,7 +246,7 @@
+ 
+   // LoadString(hInstance, IDS_CLASS, windowClass, MAX_LOADSTRING);
+ 
+-  UString title ("7-Zip"); // LangString(IDS_APP_TITLE, 0x03000000);
++  UString title ("7-Zip Modern"); // LangString(IDS_APP_TITLE, 0x03000000);
+ 
+   /*
+   //If it is already running, then focus on the window
+--- a/CPP/7zip/UI/FileManager/RegistryUtils.cpp
++++ b/CPP/7zip/UI/FileManager/RegistryUtils.cpp
+@@ -135,12 +135,9 @@
+ {
+   ShowDots = false;
+   ShowRealFileIcons = false;
+-  /* if (FullRow == false), we can use mouse click on another columns
+-     to select group of files. We need to implement additional
+-     way to select files in any column as in Explorer.
+-     Then we can enable (FullRow == true) default mode. */
+-  // FullRow = true;
+-  FullRow = false;
++  /* 7-Zip Modern: default to full-row selection, matching Windows Explorer
++     and every modern file manager. Still user-configurable in Settings. */
++  FullRow = true;
+   ShowGrid = false;
+   SingleClick = false;
+   AlternativeSelection = false;

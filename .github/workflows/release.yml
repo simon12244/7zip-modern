@@ -1,0 +1,102 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: '发布版本号（例如 v26.06.2）'
+        required: true
+        default: 'v26.06.2'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y
+            $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          "ISCC_PATH=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 确保 7-Zip 可用（解包源码用）
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "C:\Program Files\7-Zip\7z.exe")) {
+            choco install 7zip --no-progress -y
+          }
+          Test-Path "C:\Program Files\7-Zip\7z.exe"
+
+      - name: 完整构建（官方包 → 源码补丁 → 编译 → 安装包）
+        shell: cmd
+        run: scripts\build-all.cmd
+
+      - name: 产物信息与校验
+        shell: pwsh
+        run: |
+          Get-ChildItem installer\output\*.exe | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            Write-Host "$($_.Name)  $([math]::Round($_.Length/1MB,2)) MB  SHA256=$hash"
+            "$($_.Name) SHA256: $hash" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+          Get-ChildItem dist\* | ForEach-Object {
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            "$($_.Name) SHA256: $h" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: sevenzip-modern-setup
+          path: installer/output/*.exe
+
+      - name: 创建 Release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          name: 7-Zip Modern ${{ github.ref_name }}
+          files: installer/output/*.exe
+          draft: false
+          body: |
+            ## 7-Zip Modern ${{ github.ref_name }}
+
+            **装完即用** —— 安装时勾选格式，装完双击压缩包直接用 7-Zip 打开。
+
+            ### 安装器增强
+            - 可视化勾选 16 种压缩格式（默认全选），自动写入用户级文件关联（HKCU）
+            - 卸载自动还原，不残留
+            - Inno Setup modern 向导界面，简体中文
+
+            ### 源码级改造（相对官方 7-Zip）
+            - **右键菜单**：资源管理器根菜单新增「解压到当前位置」一键解压项，
+              原 7-Zip 子菜单与全部功能保持不变
+              （`HKCU\Software\7-Zip\Options\QuickExtractHere` = 0 可关闭）
+            - **文件管理器**：默认整行选中（与资源管理器一致）、列表双缓冲消除滚动闪烁、
+              窗口标识更新为 7-Zip Modern
+
+            补丁见仓库 `patches/0001-7zip-modern.patch`，可对官方源码复现。
+
+            ### 系统要求
+            Windows 10 / 11 x64
+
+            ### 校验
+            安装包与定制二进制的 SHA256 见构建日志 Summary。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

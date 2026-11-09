@@ -1,11 +1,16 @@
 @echo off
-REM 下载官方 7-Zip 安装包到 downloads\（版本更新时修改下面两处）
-set VERSION=26.06
-set URL=https://github.com/ip7z/7zip/releases/download/%VERSION%/7z%VERSION:.=%-x64.exe
+REM Download the official 7-Zip installer into downloads\
+REM Bump VERSION when a new 7-Zip release ships.
 
-if exist "%~dp0..\downloads\7z%VERSION:.=%-x64.exe" (
-  echo 已存在，跳过下载
+set VERSION=26.06
+set FILE=7z%VERSION:.=%-x64.exe
+set URL=https://github.com/ip7z/7zip/releases/download/%VERSION%/%FILE%
+
+if exist "%~dp0..\downloads\%FILE%" (
+  echo Already exists, skipping download.
   exit /b 0
 )
-echo 下载 %URL% ...
-curl -L -o "%~dp0..\downloads\7z%VERSION:.=%-x64.exe" "%URL%"
+echo Downloading %URL%
+curl -L -o "%~dp0..\downloads\%FILE%" "%URL%"
+if errorlevel 1 exit /b 1
+echo Saved to downloads\%FILE%

@@ -13,7 +13,7 @@
 
 #define OfficialExe "7z2606-x64.exe"
 #define AppVersion "26.06"
-#define ModVersion "1"
+#define ModVersion "2"
 
 [Setup]
 AppName=7-Zip Modern
@@ -43,6 +43,10 @@ Name: "chinese"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 [Files]
 ; 官方安装包仅在安装过程中解压到临时目录，不直接落到目标机器
 Source: "..\downloads\{#OfficialExe}"; Flags: dontcopy
+; 7-Zip Modern 定制二进制（官方安装完成后覆盖，实现界面与右键菜单改造）
+; 注意：必须在官方安装器运行（ssInstall）之后落盘，Inno 的文件复制顺序满足此要求
+Source: "..\dist\7zFM.exe";   DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\7-zip.dll";  DestDir: "{app}"; Flags: ignoreversion restartreplace
 
 [Run]
 Filename: "{code:LaunchManager}"; Description: "打开 7-Zip 文件管理器"; Flags: nowait postinstall skipifsilent unchecked
