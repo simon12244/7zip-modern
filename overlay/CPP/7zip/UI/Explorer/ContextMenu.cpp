@@ -740,7 +740,46 @@ Z7_COMWF_B CZipContextMenu::QueryContextMenu(HMENU hMenu, UINT indexMenu,
 
   if (_fileNames.Size() == 1 && currentCommandID + 14 <= commandIDLast)
   {
-    if (!fi0.IsDir() && DoNeedExtract(fs2us(fi0.Name), finder))
+    // === 7-Zip Modern: top-level "Add to <name>.zip" quick action ===
+    // Compressing a plain file or folder normally requires opening the 7-Zip
+    // submenu first. This mirrors the extract shortcut below so the two most
+    // frequent operations are one click away.
+    // Disable with HKCU\Software\7-Zip\Options\QuickCompressHere = 0.
+    if (hMenu && ci.Cascaded.Val && ci.QuickCompressHere.Val
+        && (fi0.IsDir() || !DoNeedExtract(fs2us(fi0.Name), finder)))
+    {
+      UString baseFolder = fs2us(folderPrefix);
+      if (_dropMode)
+        baseFolder = _dropPath;
+
+      UString arcName = fs2us(fi0.Name);
+      {
+        const int dot = arcName.ReverseFind_Dot();
+        if (dot > 0)
+          arcName.DeleteFrom(dot);
+      }
+      arcName += ".zip";
+
+      CCommandMapItem cmi;
+      cmi.Folder = baseFolder;
+      cmi.ArcName = arcName;
+      cmi.ArcType = "zip";
+
+      UString s;
+      AddCommand(kCompressToZip, s, cmi);
+      MyFormatNew_ReducedName(s, arcName);
+      Set_UserString_in_LastCommand(s);
+
+      CMenu topMenu;
+      topMenu.Attach(hMenu);
+      MyInsertMenu(topMenu, indexMenu++, currentCommandID++, s, bitmap);
+
+      CMenuItem sepItem;
+      sepItem.fType = MFT_SEPARATOR;
+      sepItem.fMask = MIIM_TYPE;
+      topMenu.InsertItem(indexMenu++, true, sepItem);
+    }
+    else if (!fi0.IsDir() && DoNeedExtract(fs2us(fi0.Name), finder))
     {
       // === 7-Zip Modern: top-level "Extract Here" quick action ===
       // Upstream buries extraction inside the 7-Zip submenu. We add a one-click

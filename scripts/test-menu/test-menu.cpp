@@ -61,29 +61,80 @@ int wmain(int argc, wchar_t **argv)
 {
   if (argc < 2)
   {
-    printf("usage: test-menu <path-to-archive>\n");
+    printf("usage: test-menu <path-to-archive> [path-to-7-zip.dll]\n");
     return 2;
   }
 
   CoInitialize(NULL);
 
   IContextMenu *pcm = NULL;
-  HRESULT hr = CoCreateInstance(CLSID_7zip, NULL, CLSCTX_INPROC_SERVER,
-      IID_IContextMenu, (void **)&pcm);
-  if (FAILED(hr))
+  HRESULT hr;
+
+  if (argc >= 3)
   {
-    printf("CoCreateInstance failed: 0x%08X\n", (unsigned)hr);
-    return 1;
+    // Load the shell extension straight from a file so a freshly built DLL can
+    // be verified without installing it over the registered copy.
+    HMODULE hmod = LoadLibraryW(argv[2]);
+    if (!hmod)
+    {
+      printf("LoadLibrary failed: %lu\n", GetLastError());
+      return 1;
+    }
+    typedef HRESULT (STDAPICALLTYPE *DllGetClassObjectFn)(REFCLSID, REFIID, void **);
+    DllGetClassObjectFn getClassObject =
+        (DllGetClassObjectFn)GetProcAddress(hmod, "DllGetClassObject");
+    if (!getClassObject)
+    {
+      printf("DllGetClassObject not found\n");
+      return 1;
+    }
+    IClassFactory *factory = NULL;
+    hr = getClassObject(CLSID_7zip, IID_IClassFactory, (void **)&factory);
+    if (FAILED(hr) || !factory)
+    {
+      printf("DllGetClassObject failed: 0x%08X\n", (unsigned)hr);
+      return 1;
+    }
+    hr = factory->CreateInstance(NULL, IID_IContextMenu, (void **)&pcm);
+    factory->Release();
+    if (FAILED(hr))
+    {
+      printf("CreateInstance failed: 0x%08X\n", (unsigned)hr);
+      return 1;
+    }
+    printf("[loaded DLL: %ws]\n", argv[2]);
+  }
+  else
+  {
+    hr = CoCreateInstance(CLSID_7zip, NULL, CLSCTX_INPROC_SERVER,
+        IID_IContextMenu, (void **)&pcm);
+    if (FAILED(hr))
+    {
+      printf("CoCreateInstance failed: 0x%08X\n", (unsigned)hr);
+      return 1;
+    }
   }
 
   IShellFolder *psfDesktop = NULL;
   SHGetDesktopFolder(&psfDesktop);
 
+  // Shell paths must use backslashes; callers (shells, scripting hosts) may
+  // hand us forward slashes, so normalise first.
+  wchar_t fullPath[MAX_PATH * 2];
+  {
+    int i = 0;
+    for (; argv[1][i] && i < (int)(MAX_PATH * 2) - 1; i++)
+      fullPath[i] = (argv[1][i] == L'/') ? L'\\' : argv[1][i];
+    fullPath[i] = 0;
+  }
+
   PIDLIST_ABSOLUTE pidl = NULL;
-  hr = psfDesktop->ParseDisplayName(NULL, NULL, argv[1], NULL, &pidl, NULL);
+  SFGAOF sfgao = 0;
+  hr = SHParseDisplayName(fullPath, NULL, &pidl, 0, &sfgao);
   if (FAILED(hr))
   {
-    printf("ParseDisplayName failed: 0x%08X\n", (unsigned)hr);
+    printf("SHParseDisplayName failed: 0x%08X\n", (unsigned)hr);
+    wprintf(L"  path: %s\n", fullPath);
     return 1;
   }
 

@@ -17,3 +17,10 @@ dll-swap.txt
 *.log
 
 dist_bak/
+
+# 本地测试环境
+run/
+
+# 菜单测试工具的编译产物
+scripts/test-menu/*.exe
+scripts/test-menu/*.obj

@@ -194,6 +194,8 @@ struct CContextMenuInfo
   CBoolPair ElimDup;
   // 7-Zip Modern: top-level "extract here" quick action (default: on)
   CBoolPair QuickExtractHere;
+  // 7-Zip Modern: top-level "Add to <name>.zip" quick action (on by default)
+  CBoolPair QuickCompressHere;
   
   bool Flags_Def;
   UInt32 Flags;

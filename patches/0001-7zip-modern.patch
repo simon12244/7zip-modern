@@ -1,58 +1,107 @@
 --- a/CPP/7zip/UI/Common/ZipRegistry.h
 +++ b/CPP/7zip/UI/Common/ZipRegistry.h
-@@ -192,6 +192,8 @@
+@@ -192,6 +192,10 @@
    CBoolPair Cascaded;
    CBoolPair MenuIcons;
    CBoolPair ElimDup;
 +  // 7-Zip Modern: top-level "extract here" quick action (default: on)
 +  CBoolPair QuickExtractHere;
++  // 7-Zip Modern: top-level "Add to <name>.zip" quick action (on by default)
++  CBoolPair QuickCompressHere;
    
    bool Flags_Def;
    UInt32 Flags;
 --- a/CPP/7zip/UI/Common/ZipRegistry.cpp
 +++ b/CPP/7zip/UI/Common/ZipRegistry.cpp
-@@ -541,6 +541,8 @@
+@@ -541,6 +541,9 @@
  static LPCTSTR const kContextMenu = TEXT("ContextMenu");
  static LPCTSTR const kMenuIcons = TEXT("MenuIcons");
  static LPCTSTR const kElimDup = TEXT("ElimDupExtract");
 +// 7-Zip Modern
 +static LPCTSTR const kQuickExtractHere = TEXT("QuickExtractHere");
++static LPCTSTR const kQuickCompressHere = TEXT("QuickCompressHere");
  static LPCTSTR const kWriteZoneId = TEXT("WriteZoneIdExtract");
  
  void CContextMenuInfo::Save() const
-@@ -552,6 +554,7 @@
+@@ -552,6 +555,8 @@
    Key_Set_BoolPair(key, kCascadedMenu, Cascaded);
    Key_Set_BoolPair(key, kMenuIcons, MenuIcons);
    Key_Set_BoolPair(key, kElimDup, ElimDup);
 +  Key_Set_BoolPair(key, kQuickExtractHere, QuickExtractHere);
++  Key_Set_BoolPair(key, kQuickCompressHere, QuickCompressHere);
  
    Key_Set_UInt32(key, kWriteZoneId, WriteZone);
    
-@@ -570,6 +573,10 @@
+@@ -570,6 +575,12 @@
    ElimDup.Val = true;
    ElimDup.Def = false;
  
 +  // 7-Zip Modern: quick extract enabled by default
 +  QuickExtractHere.Val = true;
 +  QuickExtractHere.Def = false;
++  QuickCompressHere.Val = true;
++  QuickCompressHere.Def = false;
 +
    WriteZone = (UInt32)(Int32)-1;
  
    /* we can disable email items by default,
-@@ -591,6 +598,7 @@
+@@ -591,6 +602,8 @@
    
    Key_Get_BoolPair_true(key, kCascadedMenu, Cascaded);
    Key_Get_BoolPair_true(key, kElimDup, ElimDup);
 +  Key_Get_BoolPair_true(key, kQuickExtractHere, QuickExtractHere);
++  Key_Get_BoolPair_true(key, kQuickCompressHere, QuickCompressHere);
    Key_Get_BoolPair(key, kMenuIcons, MenuIcons);
  
    Key_Get_UInt32(key, kWriteZoneId, WriteZone);
 --- a/CPP/7zip/UI/Explorer/ContextMenu.cpp
 +++ b/CPP/7zip/UI/Explorer/ContextMenu.cpp
-@@ -742,6 +742,30 @@
+@@ -740,8 +740,71 @@
+ 
+   if (_fileNames.Size() == 1 && currentCommandID + 14 <= commandIDLast)
    {
-     if (!fi0.IsDir() && DoNeedExtract(fs2us(fi0.Name), finder))
+-    if (!fi0.IsDir() && DoNeedExtract(fs2us(fi0.Name), finder))
++    // === 7-Zip Modern: top-level "Add to <name>.zip" quick action ===
++    // Compressing a plain file or folder normally requires opening the 7-Zip
++    // submenu first. This mirrors the extract shortcut below so the two most
++    // frequent operations are one click away.
++    // Disable with HKCU\Software\7-Zip\Options\QuickCompressHere = 0.
++    if (hMenu && ci.Cascaded.Val && ci.QuickCompressHere.Val
++        && (fi0.IsDir() || !DoNeedExtract(fs2us(fi0.Name), finder)))
      {
++      UString baseFolder = fs2us(folderPrefix);
++      if (_dropMode)
++        baseFolder = _dropPath;
++
++      UString arcName = fs2us(fi0.Name);
++      {
++        const int dot = arcName.ReverseFind_Dot();
++        if (dot > 0)
++          arcName.DeleteFrom(dot);
++      }
++      arcName += ".zip";
++
++      CCommandMapItem cmi;
++      cmi.Folder = baseFolder;
++      cmi.ArcName = arcName;
++      cmi.ArcType = "zip";
++
++      UString s;
++      AddCommand(kCompressToZip, s, cmi);
++      MyFormatNew_ReducedName(s, arcName);
++      Set_UserString_in_LastCommand(s);
++
++      CMenu topMenu;
++      topMenu.Attach(hMenu);
++      MyInsertMenu(topMenu, indexMenu++, currentCommandID++, s, bitmap);
++
++      CMenuItem sepItem;
++      sepItem.fType = MFT_SEPARATOR;
++      sepItem.fMask = MIIM_TYPE;
++      topMenu.InsertItem(indexMenu++, true, sepItem);
++    }
++    else if (!fi0.IsDir() && DoNeedExtract(fs2us(fi0.Name), finder))
++    {
 +      // === 7-Zip Modern: top-level "Extract Here" quick action ===
 +      // Upstream buries extraction inside the 7-Zip submenu. We add a one-click
 +      // entry at the root of the context menu for a single archive.
@@ -112,6 +161,259 @@
  
    /*
    //If it is already running, then focus on the window
+--- a/CPP/7zip/UI/FileManager/Panel.cpp
++++ b/CPP/7zip/UI/FileManager/Panel.cpp
+@@ -45,6 +45,36 @@
+ 
+ static DWORD kStyles[4] = { LVS_ICON, LVS_SMALLICON, LVS_LIST, LVS_REPORT };
+ 
++// 7-Zip Modern -------------------------------------------------------------
++// One shared, DPI-aware list font. Derived from the shell message font so it
++// always matches the language/theme of the OS, then scaled up slightly for
++// comfortable row heights.
++static HFONT Modern_ListFont()
++{
++  static HFONT font = NULL;
++  static bool tried = false;
++  if (tried)
++    return font;
++  tried = true;
++
++  NONCLIENTMETRICSW ncm;
++  ncm.cbSize = sizeof(ncm);
++  if (!::SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0))
++    return NULL;
++
++  LOGFONTW lf = ncm.lfMessageFont;
++  if (lf.lfHeight < 0)
++    lf.lfHeight = lf.lfHeight * 14 / 12;   // ~9pt -> ~10.5pt
++  lf.lfQuality = CLEARTYPE_QUALITY;
++  font = ::CreateFontIndirectW(&lf);
++  return font;
++}
++
++static HFONT Modern_CreateListFont()
++{
++  return Modern_ListFont();
++}
++
+ // static const int kCreateFolderID = 101;
+ 
+ extern HINSTANCE g_hInstance;
+@@ -424,6 +454,16 @@
+   _listView.SetImageList(Shell_Get_SysImageList_smallIcons(true), LVSIL_SMALL);
+   _listView.SetImageList(Shell_Get_SysImageList_smallIcons(false), LVSIL_NORMAL);
+ 
++  // 7-Zip Modern: step the list font up one size. The shell's message font is
++  // the right family on every Windows version; going from ~9pt to ~10.5pt
++  // gives the rows comfortable breathing room (the row height in report mode
++  // follows the font metrics) which is the single biggest readability win.
++  {
++    HFONT listFont = Modern_CreateListFont();
++    if (listFont)
++      ::SendMessage((HWND)_listView, WM_SETFONT, (WPARAM)listFont, TRUE);
++  }
++
+   // _exStyle |= LVS_EX_HEADERDRAGDROP;
+   // DWORD extendedStyle = _listView.GetExtendedListViewStyle();
+   // extendedStyle |= _exStyle;
+--- a/CPP/7zip/UI/FileManager/PanelItems.cpp
++++ b/CPP/7zip/UI/FileManager/PanelItems.cpp
+@@ -41,13 +41,47 @@
+   return true;
+ }
+ 
++// 7-Zip Modern: column widths are derived from the font metrics instead of
++// being frozen at the pixel sizes that suited the old 16px-icon list. Without
++// this the larger list font truncates every name to "docum...".
++static int Modern_ColumnScale()
++{
++  static int scale = 0;
++  if (scale != 0)
++    return scale;
++
++  scale = 100;
++  NONCLIENTMETRICSW ncm;
++  ncm.cbSize = sizeof(ncm);
++  if (::SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0))
++  {
++    int h = ncm.lfMessageFont.lfHeight;
++    if (h < 0)
++      h = -h;
++    if (h < 1)
++      h = 12;
++    // the list font used by the panel is h * 14 / 12, see Panel.cpp
++    const int listHeight = h * 14 / 12;
++    scale = listHeight * 100 / 12;
++    if (scale < 100)
++      scale = 100;
++    if (scale > 250)
++      scale = 250;
++  }
++  return scale;
++}
++
+ static unsigned GetColumnWidth(PROPID propID, VARTYPE /* varType */)
+ {
++  unsigned base;
+   switch (propID)
+   {
+-    case kpidName: return 160;
++    // Roomy enough for "some_long_document_name.txt" without truncation.
++    case kpidName: base = 210; break;
++    // Date/size columns need to fit "2026-11-09 14:12" at the larger font.
++    default: base = 118; break;
+   }
+-  return 100;
++  return (unsigned)((UInt64)base * (unsigned)Modern_ColumnScale() / 100);
+ }
+ 
+ static int GetColumnAlign(PROPID propID, VARTYPE varType)
+@@ -216,6 +250,16 @@
+         isVisible = true;
+       item.IsVisible = isVisible;
+       item.Width = columnInfo.Width;
++      // 7-Zip Modern: columns that are still sitting on the legacy defaults
++      // (160 for the name column, 100 for everything else) have never been
++      // customised, so widen them to the new font-aware defaults. A width the
++      // user actually dragged is left exactly as it is.
++      if (columnInfo.Width == 160 || columnInfo.Width == 100)
++      {
++        const unsigned modernWidth = GetColumnWidth(item.ID, item.Type);
++        if (modernWidth > (unsigned)columnInfo.Width)
++          item.Width = (int)modernWidth;
++      }
+       if (isVisible)
+         item.Order = (int)(order++);
+       continue;
+--- a/CPP/7zip/UI/FileManager/PanelListNotify.cpp
++++ b/CPP/7zip/UI/FileManager/PanelListNotify.cpp
+@@ -674,9 +674,10 @@
+ 
+     case NM_CUSTOMDRAW:
+     {
+-      if (_mySelectMode || (_markDeletedItems && _thereAreDeletedItems))
+-        return OnCustomDraw((LPNMLVCUSTOMDRAW)header, result);
+-      break;
++      // 7-Zip Modern: always route through the custom draw handler so that
++      // the alternate-row tint and selection treatment apply to every list,
++      // not only to the multi-select / deleted-items edge cases.
++      return OnCustomDraw((LPNMLVCUSTOMDRAW)header, result);
+     }
+     case LVN_BEGINDRAG:
+     {
+@@ -695,6 +696,29 @@
+   return false;
+ }
+ 
++// ---------------------------------------------------------------- 7-Zip Modern
++// Palette helpers used by the list custom-draw handler below.
++
++static COLORREF Modern_ShiftColor(COLORREF c, int delta)
++{
++  int r = (int)GetRValue(c) + delta;
++  int g = (int)GetGValue(c) + delta;
++  int b = (int)GetBValue(c) + delta;
++  if (r < 0) r = 0; else if (r > 255) r = 255;
++  if (g < 0) g = 0; else if (g > 255) g = 255;
++  if (b < 0) b = 0; else if (b > 255) b = 255;
++  return RGB((BYTE)r, (BYTE)g, (BYTE)b);
++}
++
++// Deliberately subtle: the tint has to separate rows without competing with
++// the filename text or the system's own selection highlight.
++static COLORREF Modern_ZebraColor(COLORREF base)
++{
++  const int lum = (GetRValue(base) * 299 + GetGValue(base) * 587
++                 + GetBValue(base) * 114) / 1000;
++  return Modern_ShiftColor(base, (lum > 128) ? -7 : 10);
++}
++
+ bool CPanel::OnCustomDraw(LPNMLVCUSTOMDRAW lplvcd, LRESULT &result)
+ {
+   switch (lplvcd->nmcd.dwDrawStage)
+@@ -702,56 +726,44 @@
+   case CDDS_PREPAINT :
+     result = CDRF_NOTIFYITEMDRAW;
+     return true;
+-    
++
+   case CDDS_ITEMPREPAINT:
+-    /*
+-    SelectObject(lplvcd->nmcd.hdc,
+-    GetFontForItem(lplvcd->nmcd.dwItemSpec,
+-    lplvcd->nmcd.lItemlParam) );
+-    lplvcd->clrText = GetColorForItem(lplvcd->nmcd.dwItemSpec,
+-    lplvcd->nmcd.lItemlParam);
+-    lplvcd->clrTextBk = GetBkColorForItem(lplvcd->nmcd.dwItemSpec,
+-    lplvcd->nmcd.lItemlParam);
+-    */
++  {
+     const unsigned realIndex = (unsigned)lplvcd->nmcd.lItemlParam;
+-    lplvcd->clrTextBk = _listView.GetBkColor();
+-    if (_mySelectMode)
+-    {
+-      if (realIndex != kParentIndex && _selectedStatusVector[realIndex])
+-       lplvcd->clrTextBk = RGB(255, 192, 192);
+-    }
++    const bool isSelected = (lplvcd->nmcd.uItemState & CDIS_SELECTED) != 0;
+ 
+     if (_markDeletedItems && _thereAreDeletedItems)
+     {
+       if (IsItem_Deleted(realIndex))
+         lplvcd->clrText = RGB(255, 0, 0);
+     }
+-    // lplvcd->clrText = RGB(0, 0, 0);
+-    // result = CDRF_NEWFONT;
+-    result = CDRF_NOTIFYITEMDRAW;
+-    return true;
+-    
+-    // return false;
+-    // return true;
+-    /*
+-    case CDDS_SUBITEM | CDDS_ITEMPREPAINT:
+-    if (lplvcd->iSubItem == 0)
++
++    // Multi-select mode keeps its own highlight so picked items stay obvious.
++    if (_mySelectMode)
+     {
+-    // lplvcd->clrText = RGB(255, 0, 0);
+-    lplvcd->clrTextBk = RGB(192, 192, 192);
++      if (realIndex != kParentIndex && _selectedStatusVector[realIndex])
++      {
++        lplvcd->clrTextBk = RGB(255, 192, 192);
++        result = CDRF_NEWFONT;
++        return true;
++      }
+     }
+-    else
++
++    // Selected rows are painted by the system: it applies the theme accent
++    // colour and the focus rectangle, which we must not override.
++    if (isSelected)
+     {
+-    lplvcd->clrText = RGB(0, 0, 0);
+-    lplvcd->clrTextBk = RGB(255, 255, 255);
++      result = CDRF_DODEFAULT;
++      return true;
+     }
+-    return true;
+-    */
+ 
+-        /* At this point, you can change the background colors for the item
+-        and any subitems and return CDRF_NEWFONT. If the list-view control
+-        is in report mode, you can simply return CDRF_NOTIFYSUBITEMREDRAW
+-        to customize the item's subitems individually */
++    const COLORREF base = _listView.GetBkColor();
++    lplvcd->clrTextBk = ((lplvcd->nmcd.dwItemSpec & 1) != 0)
++        ? Modern_ZebraColor(base)
++        : base;
++    result = CDRF_NEWFONT;
++    return true;
++  }
+   }
+   return false;
+ }
 --- a/CPP/7zip/UI/FileManager/RegistryUtils.cpp
 +++ b/CPP/7zip/UI/FileManager/RegistryUtils.cpp
 @@ -135,12 +135,9 @@

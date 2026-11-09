@@ -543,6 +543,7 @@ static LPCTSTR const kMenuIcons = TEXT("MenuIcons");
 static LPCTSTR const kElimDup = TEXT("ElimDupExtract");
 // 7-Zip Modern
 static LPCTSTR const kQuickExtractHere = TEXT("QuickExtractHere");
+static LPCTSTR const kQuickCompressHere = TEXT("QuickCompressHere");
 static LPCTSTR const kWriteZoneId = TEXT("WriteZoneIdExtract");
 
 void CContextMenuInfo::Save() const
@@ -555,6 +556,7 @@ void CContextMenuInfo::Save() const
   Key_Set_BoolPair(key, kMenuIcons, MenuIcons);
   Key_Set_BoolPair(key, kElimDup, ElimDup);
   Key_Set_BoolPair(key, kQuickExtractHere, QuickExtractHere);
+  Key_Set_BoolPair(key, kQuickCompressHere, QuickCompressHere);
 
   Key_Set_UInt32(key, kWriteZoneId, WriteZone);
   
@@ -576,6 +578,8 @@ void CContextMenuInfo::Load()
   // 7-Zip Modern: quick extract enabled by default
   QuickExtractHere.Val = true;
   QuickExtractHere.Def = false;
+  QuickCompressHere.Val = true;
+  QuickCompressHere.Def = false;
 
   WriteZone = (UInt32)(Int32)-1;
 
@@ -599,6 +603,7 @@ void CContextMenuInfo::Load()
   Key_Get_BoolPair_true(key, kCascadedMenu, Cascaded);
   Key_Get_BoolPair_true(key, kElimDup, ElimDup);
   Key_Get_BoolPair_true(key, kQuickExtractHere, QuickExtractHere);
+  Key_Get_BoolPair_true(key, kQuickCompressHere, QuickCompressHere);
   Key_Get_BoolPair(key, kMenuIcons, MenuIcons);
 
   Key_Get_UInt32(key, kWriteZoneId, WriteZone);
