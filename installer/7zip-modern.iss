@@ -38,8 +38,8 @@ SolidCompression=yes
 CloseApplications=yes
 
 [Languages]
-; 优先使用 Inno 自带的中文语言包，找不到时回退到仓库内自带副本（保证 CI 环境可用）
-Name: "chinese"; MessagesFile: "compiler:Languages\ChineseSimplified.isl,Languages\ChineseSimplified.isl"
+; 使用仓库内自带的中文语言包，保证任意构建环境（含 CI）都能编译
+Name: "chinese"; MessagesFile: "Languages\ChineseSimplified.isl"
 
 [Files]
 ; 官方安装包仅在安装过程中解压到临时目录，不直接落到目标机器
